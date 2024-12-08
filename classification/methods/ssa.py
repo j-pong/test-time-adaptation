@@ -46,81 +46,100 @@ class SSA(TTAMethod):
                         delattr(module, hook.name)
 
         # SSA
-        # particles for calculating the task vector
         self.src_model = deepcopy(self.model)
         for param in self.src_model.parameters():
             param.detach_()
         self.hidden_model = deepcopy(self.model)
         for param in self.hidden_model.parameters():
-            param.detach_() 
+            param.detach_()
             
-        # Bayesian filtering parameters
-        if "resnet" in cfg.MODEL.ARCH:
-            q = 0.00025
-        elif "vit_b" in cfg.MODEL.ARCH:
-            q = 0.005
-        elif "swin_b" in cfg.MODEL.ARCH:
-            q = 0.005
-        elif "d2v" in cfg.MODEL.ARCH:
-            q = 0.005
-        else:
-            raise NotImplementedError
+        ## Bayesian filtering parameters
         self.bf_parameters = {
             "a": torch.ones(1, requires_grad=False).float().cuda() * 0.99, 
-            "q": torch.ones(1, requires_grad=False).float().cuda() * q, 
+            "kappa": torch.ones(1, requires_grad=False).float().cuda() * 0.06, 
             "c": torch.ones(1, requires_grad=False).float().cuda() * 0.99}
-        self.bf_running_parameters = {
-            "hidden_var": torch.ones(1, requires_grad=False).float().cuda() * 0.0
-        }
+        
+        self.learnable_model_state = {}
+        for n, p in model.named_parameters():
+            if p.requires_grad:
+                self.learnable_model_state[n] = p.clone().detach()
+        self.current_size = 0
+        self.buffer_size = 64
+        self.register_buffer('sde_buffer_mean', torch.zeros(self.buffer_size).float().cuda())
+        self.register_buffer('sde_buffer_var', torch.zeros(self.buffer_size).float().cuda())
+        
+        self.accum_step = torch.zeros(1, requires_grad=False).float().cuda()
+        self.num_accum = 0.0
         
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
+    
+    @torch.no_grad()
+    def sde_buffering(self, value):
+        full_flag = False
+        if self.current_size < self.buffer_size:
+            self.sde_buffer_mean[self.current_size] = value
+            self.sde_buffer_var[self.current_size] = value ** 2
+            self.current_size += 1
+        else:
+            full_flag = True
+            self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
+            self.sde_buffer_mean[-1] = value
+            self.sde_buffer_var[:-1] = self.sde_buffer_var[1:].clone() 
+            self.sde_buffer_var[-1] = value ** 2
+            
+        return full_flag
         
-    # def setup_optimizer(self):
-    #     if "d2v" in self.cfg.MODEL.ARCH:
-    #         return torch.optim.SGD(self.params,
-    #                                lr=1.4e-5,
-    #                                momentum=self.cfg.OPTIM.MOMENTUM,
-    #                                dampening=self.cfg.OPTIM.DAMPENING,
-    #                                weight_decay=self.cfg.OPTIM.WD,
-    #                                nesterov=self.cfg.OPTIM.NESTEROV)
-    #     # if "swin_b" in self.cfg.MODEL.ARCH:
-    #     #     logger.info("Overwriting learning rate for SWIN, using a learning rate of 3.0e-4.")
-    #     #     return torch.optim.SGD(self.params,
-    #     #                            lr=2.5e-4,
-    #     #                            momentum=self.cfg.OPTIM.MOMENTUM,
-    #     #                            dampening=self.cfg.OPTIM.DAMPENING,
-    #     #                            weight_decay=self.cfg.OPTIM.WD,
-    #     #                            nesterov=self.cfg.OPTIM.NESTEROV)
-    #     else:
-    #         return torch.optim.SGD(self.params,
-    #                                lr=self.cfg.OPTIM.LR,
-    #                                momentum=self.cfg.OPTIM.MOMENTUM,
-    #                                dampening=self.cfg.OPTIM.DAMPENING,
-    #                                weight_decay=self.cfg.OPTIM.WD,
-    #                                nesterov=self.cfg.OPTIM.NESTEROV)
+    def setup_optimizer(self):
+        if "d2v" in self.cfg.MODEL.ARCH:
+            self.lr = 1.0e-5
+            return torch.optim.SGD(self.params,
+                                   lr=self.lr,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
+        else:
+            self.lr = 2.5e-4
+            return torch.optim.SGD(self.params,
+                                   lr=self.lr,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
         
     @torch.no_grad()
     def bayesian_filtering(
         self,
+        sigma_t=None
     ): 
         # 1. Inference variance
-        predicted_var = self.bf_parameters["a"] ** 2 * self.bf_running_parameters["hidden_var"] + self.bf_parameters["q"]
-        r = (1 - self.bf_parameters["q"])
-        beta = r / (predicted_var + r)
-        self.bf_running_parameters["hidden_var"] = beta * predicted_var
+        K_t = self.bf_parameters["kappa"]
+        beta = (1.0 - K_t)
         
+        if sigma_t is None:
+            step = None
+        else:
+            R = 1e-9
+            C = P_t = K_t / (1 - K_t) * R
+            step = C ** 2 / (R * self.lr**2 * sigma_t)
+            
         # 2. Inference mean
         src_model, model, hidden_model = self.models
-        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters())
+        prev_model = self.prev_model
+        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
         for models_param in zip_models:
-            src_param, param, hidden_param = models_param
+            src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
                 fp32_param = to_float(param[:].data[:])
                 fp32_src_param = to_float(src_param[:].data[:])
                 fp32_hidden_param = to_float(hidden_param[:].data[:])
+                fp32_prev_param = to_float(prev_param[:].data[:])
                 
                 # A. predict step
+                # if sigma_t is not None:
+                    # delta_g = fp32_prev_param - fp32_param / step # approximation
+                    # fp32_param = fp32_prev_param - delta_g
                 predicted_parm = self.bf_parameters["a"] * (fp32_hidden_param - fp32_src_param) + fp32_src_param
                 
                 # B. update step
@@ -130,9 +149,33 @@ class SSA(TTAMethod):
                 # C. transfer step for new observation
                 param.data[:] = (self.bf_parameters["c"] * (fp32_param - hidden_param_updated) + hidden_param_updated).half()
                 
-        return model
+        return model, step
+    
+    @torch.no_grad()
+    def estimate_variance(self):
+        observation = self.model.state_dict()
+        prev_observation = self.prev_model.state_dict()
+        total_numel = 0
+        total_delta_g = 0.0
+        for k in self.learnable_model_state.keys():
+            param = to_float(observation[k][:].data[:])
+            prev_param = to_float(prev_observation[k][:].data[:])
             
-
+            delta_g = (prev_param - param) / self.lr # approximation
+            
+            total_delta_g += delta_g.sum()
+            total_numel += delta_g.numel()
+            
+        delta_g = total_delta_g / total_numel
+        
+        sigma_t = self.sde_buffer_var.sum() / self.buffer_size \
+            - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta_g \
+            + delta_g ** 2
+        
+        full_flag = self.sde_buffering(delta_g)
+        
+        return sigma_t if full_flag else None
+        
     def loss_calculation(self, x):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
@@ -173,6 +216,10 @@ class SSA(TTAMethod):
 
     @torch.enable_grad()
     def forward_and_adapt(self, x):
+        self.prev_model = deepcopy(self.model)
+        for param in self.prev_model.parameters():
+            param.detach_()
+        
         if self.mixed_precision and self.device == "cuda":
             with torch.cuda.amp.autocast():
                 outputs, loss = self.loss_calculation(x)
@@ -187,7 +234,11 @@ class SSA(TTAMethod):
             self.optimizer.zero_grad()    
 
         with torch.no_grad():
-            self.model = self.bayesian_filtering()
+            sigma_t = self.estimate_variance()
+            self.model, step = self.bayesian_filtering(sigma_t)
+            if step is not None:
+                self.accum_step += step
+                self.num_accum += 1
 
             if self.use_prior_correction:
                 prior = outputs.softmax(1).mean(0)
