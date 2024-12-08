@@ -17,32 +17,13 @@ from utils.losses import Entropy, SymmetricCrossEntropy, SoftLikelihoodRatio
 def to_float(t):
     return t.float() if torch.is_floating_point(t) else t
 
-@torch.no_grad()
-def moments(
-    model, 
-    src_model, 
-    alpha=0.99, 
-    update_all=False, 
-):
-    # energy_buffer =  []
-    if alpha < 1.0:
-        for param, src_param in zip(model.parameters(), src_model.parameters()):
-            if param.requires_grad or update_all: 
-                fp32_param = to_float(alpha * param[:].data[:]) + (1 - alpha) * to_float(src_param[:].data[:])
-                param.data[:] = fp32_param.half()
-    return model
-
-@torch.no_grad()
 def update_model_probs(x_ema, x, momentum=0.9):
     return momentum * x_ema + (1 - momentum) * x
-
 
 @ADAPTATION_REGISTRY.register()
 class SSA(TTAMethod):
     def __init__(self, cfg, model, num_classes):
         super().__init__(cfg, model, num_classes)
-        param_size_ratio = self.num_trainable_params / 38400
-
         self.use_weighting = cfg.ROID.USE_WEIGHTING
         self.use_prior_correction = cfg.ROID.USE_PRIOR_CORRECTION
         self.use_consistency = cfg.ROID.USE_CONSISTENCY
@@ -64,64 +45,93 @@ class SSA(TTAMethod):
                     if isinstance(hook, WeightNorm):
                         delattr(module, hook.name)
 
+        # SSA
+        # particles for calculating the task vector
         self.src_model = deepcopy(self.model)
         for param in self.src_model.parameters():
             param.detach_()
-
-        # CMF
-        self.post_type = cfg.CMF.TYPE
         self.hidden_model = deepcopy(self.model)
         for param in self.hidden_model.parameters():
             param.detach_() 
-        
-        self.alpha = cfg.CMF.ALPHA
-        
-        self.register_buffer('hidden_var', torch.ones(1).float().cuda() * 0.0)
-        if "resnet" in self.cfg.MODEL.ARCH:
-            self.q = 0.00025 * param_size_ratio
+            
+        # Bayesian filtering parameters
+        if "resnet" in cfg.MODEL.ARCH:
+            q = 0.00025
+        elif "vit_b" in cfg.MODEL.ARCH:
+            q = 0.005
+        elif "swin_b" in cfg.MODEL.ARCH:
+            q = 0.005
+        elif "d2v" in cfg.MODEL.ARCH:
+            q = 0.005
         else:
-            self.q = cfg.CMF.Q * param_size_ratio
-        
-        self.gamma = cfg.CMF.GAMMA
+            raise NotImplementedError
+        self.bf_parameters = {
+            "a": torch.ones(1, requires_grad=False).float().cuda() * 0.99, 
+            "q": torch.ones(1, requires_grad=False).float().cuda() * q, 
+            "c": torch.ones(1, requires_grad=False).float().cuda() * 0.99}
+        self.bf_running_parameters = {
+            "hidden_var": torch.ones(1, requires_grad=False).float().cuda() * 0.0
+        }
         
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
         
+    # def setup_optimizer(self):
+    #     if "d2v" in self.cfg.MODEL.ARCH:
+    #         return torch.optim.SGD(self.params,
+    #                                lr=1.4e-5,
+    #                                momentum=self.cfg.OPTIM.MOMENTUM,
+    #                                dampening=self.cfg.OPTIM.DAMPENING,
+    #                                weight_decay=self.cfg.OPTIM.WD,
+    #                                nesterov=self.cfg.OPTIM.NESTEROV)
+    #     # if "swin_b" in self.cfg.MODEL.ARCH:
+    #     #     logger.info("Overwriting learning rate for SWIN, using a learning rate of 3.0e-4.")
+    #     #     return torch.optim.SGD(self.params,
+    #     #                            lr=2.5e-4,
+    #     #                            momentum=self.cfg.OPTIM.MOMENTUM,
+    #     #                            dampening=self.cfg.OPTIM.DAMPENING,
+    #     #                            weight_decay=self.cfg.OPTIM.WD,
+    #     #                            nesterov=self.cfg.OPTIM.NESTEROV)
+    #     else:
+    #         return torch.optim.SGD(self.params,
+    #                                lr=self.cfg.OPTIM.LR,
+    #                                momentum=self.cfg.OPTIM.MOMENTUM,
+    #                                dampening=self.cfg.OPTIM.DAMPENING,
+    #                                weight_decay=self.cfg.OPTIM.WD,
+    #                                nesterov=self.cfg.OPTIM.NESTEROV)
+        
     @torch.no_grad()
-    def bayesian_filtering(self):
-        # 1. predict step
-        # NOTE: self.post_type==lp is the default, 
-        # in which case the predict step and update step can be combined to reduce computation. 
-        # For clarity, they are separated in the code.
-        recovered_model = moments(
-            model=self.hidden_model,
-            src_model=self.src_model, 
-            alpha=self.alpha,
-            update_all=True
-        )
+    def bayesian_filtering(
+        self,
+    ): 
+        # 1. Inference variance
+        predicted_var = self.bf_parameters["a"] ** 2 * self.bf_running_parameters["hidden_var"] + self.bf_parameters["q"]
+        r = (1 - self.bf_parameters["q"])
+        beta = r / (predicted_var + r)
+        self.bf_running_parameters["hidden_var"] = beta * predicted_var
         
-        # 2. update step
-        self.hidden_var = self.alpha ** 2 * self.hidden_var + self.q
+        # 2. Inference mean
+        src_model, model, hidden_model = self.models
+        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters())
+        for models_param in zip_models:
+            src_param, param, hidden_param = models_param
+            if param.requires_grad:
+                fp32_param = to_float(param[:].data[:])
+                fp32_src_param = to_float(src_param[:].data[:])
+                fp32_hidden_param = to_float(hidden_param[:].data[:])
+                
+                # A. predict step
+                predicted_parm = self.bf_parameters["a"] * (fp32_hidden_param - fp32_src_param) + fp32_src_param
+                
+                # B. update step
+                hidden_param_updated = beta * (predicted_parm - fp32_param) + fp32_param
+                hidden_param.data[:] = hidden_param_updated.half()
+                
+                # C. transfer step for new observation
+                param.data[:] = (self.bf_parameters["c"] * (fp32_param - hidden_param_updated) + hidden_param_updated).half()
+                
+        return model
             
-        r = (1 - self.q)
-        self.beta = r / (self.hidden_var + r)
-        self.beta = self.beta if self.beta > 0.89 else 0.89
-        self.beta = self.beta if self.beta < 0.9999 else 1.0
-        
-        self.hidden_var = self.beta * self.hidden_var
-        self.hidden_model = moments(
-            model=recovered_model, 
-            src_model=self.model, 
-            alpha=self.beta,
-            update_all=True
-        )
-        
-        # 3. parameter ensemble step
-        self.model = moments(
-            model=self.model, 
-            src_model=recovered_model if self.post_type == "op" else self.hidden_model, 
-            alpha=self.gamma
-        )
 
     def loss_calculation(self, x):
         imgs_test = x[0]
@@ -177,7 +187,7 @@ class SSA(TTAMethod):
             self.optimizer.zero_grad()    
 
         with torch.no_grad():
-            self.bayesian_filtering()
+            self.model = self.bayesian_filtering()
 
             if self.use_prior_correction:
                 prior = outputs.softmax(1).mean(0)
