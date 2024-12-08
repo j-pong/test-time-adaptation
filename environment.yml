@@ -1,4 +1,4 @@
-name: tta
+name: tta-image
 channels:
   - pytorch
   - nvidia

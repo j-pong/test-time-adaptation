@@ -4,6 +4,8 @@ import logging
 import numpy as np
 import methods
 
+import time
+
 from models.model import get_model
 from utils.misc import print_memory_info
 from utils.eval_utils import get_accuracy, eval_domain_dict
@@ -69,6 +71,7 @@ def evaluate(description):
     domain_dict = {}
 
     # start evaluation
+    t = time.process_time()
     for i_dom, domain_name in enumerate(domain_seq_loop):
         if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
             try:
@@ -121,6 +124,9 @@ def evaluate(description):
                 errs_5.append(err)
 
             logger.info(f"{cfg.CORRUPTION.DATASET} error % [{domain_name}{severity}][#samples={num_samples}]: {err:.2%}")
+    elapsed_time = time.process_time() - t
+
+    logger.info(f"elapsed time: {elapsed_time}")
 
     if len(errs_5) > 0:
         logger.info(f"mean error: {np.mean(errs):.2%}, mean error at 5: {np.mean(errs_5):.2%}")

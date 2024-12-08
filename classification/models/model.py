@@ -1,6 +1,8 @@
 import json
 import logging
 
+import transformers
+
 import timm
 import torch
 import torch.nn as nn
@@ -103,6 +105,16 @@ def get_timm_model(model_name: str):
             break
 
     return model, preprocess
+
+def get_transformers_model(model_name="d2v"):
+    if model_name == "d2v":
+        from transformers import BeitImageProcessor, Data2VecVisionForImageClassification
+        feature_extractor = BeitImageProcessor.from_pretrained('facebook/data2vec-vision-base-ft1k')
+        model = Data2VecVisionForImageClassification.from_pretrained('facebook/data2vec-vision-base-ft1k')
+    else:
+        raise NotImplementedError
+
+    return model, feature_extractor
 
 
 class ResNetDomainNet126(torch.nn.Module):
@@ -291,7 +303,46 @@ class TransformerWrapper(torch.nn.Module):
         # Classifier "token" as used by standard language architectures
         x = x[:, 0]
         return x
+    
+class D2VWrapper(torch.nn.Module):
+    def __init__(self, model, feature_extractor=None):
+        super().__init__()
+        self.model = model
+        self.feature_extractor = feature_extractor
+        self.normalize = None
 
+    def forward(self, x):
+        inputs = {"pixel_values": x}
+
+        x = self.model(**inputs)
+
+        x = x.logits
+
+        return x
+    
+class D2VSplitWrapper(torch.nn.Module):
+    def __init__(self, model, feature_extractor=None):
+        super().__init__()
+        self.model = model
+        self.feature_extractor = feature_extractor
+        self.normalize = None
+
+    def forward(self, x):
+        inputs = {
+            "pixel_values": x,
+            "head_mask": None,
+            "output_attentions": None,
+            "output_hidden_states": None,
+            "return_dict": False
+        }
+
+        outputs = self.model.model.data2vec_vision(
+            **inputs
+        )
+        
+        outputs = outputs[1]
+
+        return outputs
 
 class ZeroShotCLIP(nn.Module):
     def __init__(self, cfg, model, device, normalize):
@@ -415,6 +466,19 @@ def get_model(cfg, num_classes: int, device: Union[str, torch.device]):
                 logger.info("Successfully restored pre-trained soft prompt (CoOp)")
         else:
             base_model = ZeroShotCLIP(cfg, base_model, device, normalize=normalization)
+            
+    if "d2v" in cfg.MODEL.ARCH:
+        base_model, feature_extractor = get_transformers_model(cfg.MODEL.ARCH)
+        base_model = D2VWrapper(model=base_model, feature_extractor=feature_extractor)
+        
+        if cfg.CORRUPTION.DATASET == "imagenet_a":
+            base_model = ImageNetXWrapper(base_model, IMAGENET_A_MASK)
+        elif cfg.CORRUPTION.DATASET == "imagenet_r":
+            base_model = ImageNetXWrapper(base_model, IMAGENET_R_MASK)
+        elif cfg.CORRUPTION.DATASET == "imagenet_d109":
+            base_model = ImageNetXWrapper(base_model, IMAGENET_D109_MASK)
+        
+        return base_model.to(device), preprocess
 
     elif cfg.CORRUPTION.DATASET == "domainnet126":
         base_model = ResNetDomainNet126(arch=cfg.MODEL.ARCH, checkpoint_path=cfg.MODEL.CKPT_PATH, num_classes=num_classes)
@@ -505,6 +569,9 @@ def split_up_model(model, arch_name: str, dataset_name: str):
     elif "swin_" in arch_name:
         encoder = nn.Sequential(model.normalize, model.model.features, model.model.norm, model.model.permute, model.model.avgpool, model.model.flatten)
         classifier = model.model.head
+    elif "d2v" in arch_name:
+        encoder = D2VSplitWrapper(model)
+        classifier = model.model.classifier
     elif "convnext" in arch_name:
         encoder = nn.Sequential(model.normalize, model.model.features, model.model.avgpool)
         classifier = model.model.classifier
