@@ -49,7 +49,8 @@ class EATA(TTAMethod):
                                                  ckpt_path=cfg.MODEL.CKPT_PATH,
                                                  num_samples=cfg.SOURCE.NUM_SAMPLES,    # number of samples for ewc reg.
                                                  percentage=cfg.SOURCE.PERCENTAGE,
-                                                 workers=min(cfg.SOURCE.NUM_WORKERS, os.cpu_count()))
+                                                 workers=min(cfg.SOURCE.NUM_WORKERS, os.cpu_count()),
+                                                 use_clip=cfg.MODEL.USE_CLIP)
             ewc_optimizer = torch.optim.SGD(self.params, 0.001)
             self.fishers = {} # fisher regularizer items for anti-forgetting, need to be calculated pre model adaptation (Eqn. 9)
             train_loss_fn = nn.CrossEntropyLoss().to(self.device)
