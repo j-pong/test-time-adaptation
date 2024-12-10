@@ -5,7 +5,7 @@ CORRUPTION:
   TYPE:
     - ""
 MODEL:
-  ADAPTATION: cmf
+  ADAPTATION: ssa
   ARCH: resnet50
 OPTIM:
   BETA: 0.9

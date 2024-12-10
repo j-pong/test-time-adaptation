@@ -106,6 +106,7 @@ def get_timm_model(model_name: str):
 
     return model, preprocess
 
+
 def get_transformers_model(model_name="d2v"):
     if model_name == "d2v":
         from transformers import BeitImageProcessor, Data2VecVisionForImageClassification
@@ -270,7 +271,6 @@ class ImageNetXMaskingLayer(torch.nn.Module):
     def forward(self, x):
         return x[:, self.mask]
 
-
 class ImageNetXWrapper(torch.nn.Module):
     def __init__(self, model, mask):
         super().__init__()
@@ -279,9 +279,11 @@ class ImageNetXWrapper(torch.nn.Module):
         self.masking_layer = ImageNetXMaskingLayer(mask)
 
     def forward(self, x):
-        logits = self.model(self.normalize(x))
+        logits = self.model(self.normalize(x) if self.normalize is not None else x)
+        if isinstance(logits, transformers.modeling_outputs.ImageClassifierOutput):
+            logits = logits.logits
+        
         return self.masking_layer(logits)
-
 
 class TransformerWrapper(torch.nn.Module):
     def __init__(self, model):
@@ -471,12 +473,9 @@ def get_model(cfg, num_classes: int, device: Union[str, torch.device]):
         base_model, feature_extractor = get_transformers_model(cfg.MODEL.ARCH)
         base_model = D2VWrapper(model=base_model, feature_extractor=feature_extractor)
         
-        if cfg.CORRUPTION.DATASET == "imagenet_a":
-            base_model = ImageNetXWrapper(base_model, IMAGENET_A_MASK)
-        elif cfg.CORRUPTION.DATASET == "imagenet_r":
-            base_model = ImageNetXWrapper(base_model, IMAGENET_R_MASK)
-        elif cfg.CORRUPTION.DATASET == "imagenet_d109":
-            base_model = ImageNetXWrapper(base_model, IMAGENET_D109_MASK)
+        if cfg.CORRUPTION.DATASET in ["imagenet_a", "imagenet_r", "imagenet_v2", "imagenet_d109"]:
+            mask = eval(f"{cfg.CORRUPTION.DATASET.upper()}_MASK")
+            base_model = ImageNetXWrapper(base_model, mask=mask)
         
         return base_model.to(device), preprocess
 

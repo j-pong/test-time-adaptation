@@ -122,6 +122,11 @@ def evaluate(description):
             errs.append(err)
             if severity == 5 and domain_name != "none":
                 errs_5.append(err)
+            
+            if hasattr(model, "accum_step"):
+                logger.info(f"estimated step: {model.accum_step / model.num_accum}")            
+                model.accum_step = model.accum_step * 0.0
+                model.num_accum = model.num_accum * 0.0
 
             logger.info(f"{cfg.CORRUPTION.DATASET} error % [{domain_name}{severity}][#samples={num_samples}]: {err:.2%}")
     elapsed_time = time.process_time() - t
