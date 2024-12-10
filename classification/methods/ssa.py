@@ -65,6 +65,7 @@ class SSA(TTAMethod):
                 self.learnable_model_state[n] = p.clone().detach()
         self.current_size = 0
         self.buffer_size = 64
+        self.full_flag = False
         self.register_buffer('sde_buffer_mean', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('sde_buffer_var', torch.zeros(self.buffer_size).float().cuda())
         
@@ -76,20 +77,17 @@ class SSA(TTAMethod):
     
     @torch.no_grad()
     def sde_buffering(self, value):
-        full_flag = False
         if self.current_size < self.buffer_size:
             self.sde_buffer_mean[self.current_size] = value
             self.sde_buffer_var[self.current_size] = value ** 2
             self.current_size += 1
         else:
-            full_flag = True
+            self.full_flag = True
             self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
             self.sde_buffer_mean[-1] = value
             self.sde_buffer_var[:-1] = self.sde_buffer_var[1:].clone() 
             self.sde_buffer_var[-1] = value ** 2
             
-        return full_flag
-        
     def setup_optimizer(self):
         if "d2v" in self.cfg.MODEL.ARCH:
             self.lr = 1.0e-5
@@ -117,7 +115,7 @@ class SSA(TTAMethod):
         K_t = self.bf_parameters["kappa"]
         beta = (1.0 - K_t)
         
-        if sigma_t is None:
+        if not self.full_flag:
             step = None
         else:
             R = 1e-9
@@ -128,6 +126,8 @@ class SSA(TTAMethod):
         src_model, model, hidden_model = self.models
         prev_model = self.prev_model
         zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
+        total_numel = 0
+        total_delta_g = 0.0
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
@@ -137,9 +137,12 @@ class SSA(TTAMethod):
                 fp32_prev_param = to_float(prev_param[:].data[:])
                 
                 # A. predict step
-                # if sigma_t is not None:
-                    # delta_g = fp32_prev_param - fp32_param / step # approximation
-                    # fp32_param = fp32_prev_param - delta_g
+                delta_g = (fp32_prev_param - fp32_param) / self.lr
+                if self.full_flag:
+                    delta_g = delta_g * step
+                    fp32_param = fp32_prev_param - delta_g * self.lr
+                total_delta_g += delta_g.sum()
+                total_numel += delta_g.numel()
                 predicted_parm = self.bf_parameters["a"] * (fp32_hidden_param - fp32_src_param) + fp32_src_param
                 
                 # B. update step
@@ -148,6 +151,8 @@ class SSA(TTAMethod):
                 
                 # C. transfer step for new observation
                 param.data[:] = (self.bf_parameters["c"] * (fp32_param - hidden_param_updated) + hidden_param_updated).half()
+        delta_g = total_delta_g / total_numel
+        self.sde_buffering(delta_g)
                 
         return model, step
     
@@ -172,9 +177,7 @@ class SSA(TTAMethod):
             - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta_g \
             + delta_g ** 2
         
-        full_flag = self.sde_buffering(delta_g)
-        
-        return sigma_t if full_flag else None
+        return sigma_t
         
     def loss_calculation(self, x):
         imgs_test = x[0]
