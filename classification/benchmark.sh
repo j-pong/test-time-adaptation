@@ -1,6 +1,6 @@
 export ROOT_PATH=$PWD
 # dataset
-export settings=(continual correlated)
+export settings=(continual)
 export dataset=(imagenet_c imagenet_d109)
 
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
@@ -23,7 +23,7 @@ for setting in ${settings[*]}; do
 	fi
 	for delta in ${deltas[*]}; do
 	for method in ${methods[*]}; do
-	if [ "$method" = "sar" ]; then
+	if [ "$method" = "sar" ] || [ "$method" = "eata" ]; then
 		MIXED_PRECISION=False
 	else
 		MIXED_PRECISION=True

@@ -1,6 +1,7 @@
 """
 This file is based on the code from: https://openreview.net/forum?id=BllUWdpIOA
 """
+import logging
 
 import torch.jit
 import torch.nn as nn
@@ -13,6 +14,8 @@ from models.model import ResNetDomainNet126
 from augmentations.transforms_cotta import get_tta_transforms
 from utils.registry import ADAPTATION_REGISTRY
 from utils.losses import Entropy, SymmetricCrossEntropy, SoftLikelihoodRatio
+
+logger = logging.getLogger(__name__)
 
 def to_float(t):
     return t.float() if torch.is_floating_point(t) else t
@@ -121,6 +124,12 @@ class SSA(TTAMethod):
             R = 1e-9
             C = P_t = K_t / (1 - K_t) * R
             step = C ** 2 / (R * self.lr**2 * sigma_t)
+            # if step >= 100.0:
+            #     logger.warning(f"Reset {step.item()}.")
+            #     step = -1
+            # elif step >= 50.0:
+            #     logger.warning(f"Abnormal samples are detected {step.item()}.")
+            #     step = 0.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -154,7 +163,7 @@ class SSA(TTAMethod):
         delta_g = total_delta_g / total_numel
         self.sde_buffering(delta_g)
                 
-        return model, step
+        return model, hidden_model, step
     
     @torch.no_grad()
     def estimate_variance(self):
@@ -238,7 +247,7 @@ class SSA(TTAMethod):
 
         with torch.no_grad():
             sigma_t = self.estimate_variance()
-            self.model, step = self.bayesian_filtering(sigma_t)
+            self.model, self.hidden_model, step = self.bayesian_filtering(sigma_t)
             if step is not None:
                 self.accum_step += step
                 self.num_accum += 1
@@ -256,6 +265,15 @@ class SSA(TTAMethod):
             raise Exception("cannot reset without saved model/optimizer state")
         self.load_model_and_optimizer()
         self.class_probs_ema = 1 / self.num_classes * torch.ones(self.num_classes).to(self.device)
+        
+        # self.full_flag = False
+        # self.current_size = 0
+        # self.sde_buffer_mean = self.sde_buffer_mean * 0.0
+        # self.sde_buffer_var = self.sde_buffer_var * 0.0
+        
+        # self.hidden_model = deepcopy(self.src_model)
+        # for param in self.hidden_model.parameters():
+        #     param.detach_()
 
     def collect_params(self):
         """Collect the affine scale + shift parameters from normalization layers.

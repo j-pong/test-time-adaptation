@@ -183,6 +183,23 @@ class EATA(TTAMethod):
                 m.requires_grad_(True)
             elif isinstance(m, (nn.LayerNorm, nn.GroupNorm)):
                 m.requires_grad_(True)
+                
+    def setup_optimizer(self):
+        if "d2v" in self.cfg.MODEL.ARCH:
+            logger.info("Overwriting learning rate for D2V, using a learning rate of 5e-6.")
+            return torch.optim.SGD(self.params,
+                                   lr=5e-6,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
+        else:
+            return torch.optim.SGD(self.params,
+                                   lr=self.cfg.OPTIM.LR,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
 
 
 def update_model_probs(current_model_probs, new_probs):
