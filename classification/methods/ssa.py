@@ -58,9 +58,10 @@ class SSA(TTAMethod):
             
         ## Bayesian filtering parameters
         self.bf_parameters = {
-            "a": torch.ones(1, requires_grad=False).float().cuda() * 0.99, 
-            "kappa": torch.ones(1, requires_grad=False).float().cuda() * 0.06, 
-            "c": torch.ones(1, requires_grad=False).float().cuda() * 0.99}
+            "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * 0.01,
+            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * 0.06, 
+            "lr_a": torch.ones(1, requires_grad=False).float().cuda() * 0.01,
+            "r": torch.ones(1, requires_grad=False).float().cuda() * 1e-9}
         
         self.learnable_model_state = {}
         for n, p in model.named_parameters():
@@ -78,19 +79,6 @@ class SSA(TTAMethod):
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
     
-    @torch.no_grad()
-    def sde_buffering(self, value):
-        if self.current_size < self.buffer_size:
-            self.sde_buffer_mean[self.current_size] = value
-            self.sde_buffer_var[self.current_size] = value ** 2
-            self.current_size += 1
-        else:
-            self.full_flag = True
-            self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
-            self.sde_buffer_mean[-1] = value
-            self.sde_buffer_var[:-1] = self.sde_buffer_var[1:].clone() 
-            self.sde_buffer_var[-1] = value ** 2
-            
     def setup_optimizer(self):
         if "d2v" in self.cfg.MODEL.ARCH:
             self.lr = 1.0e-5
@@ -108,61 +96,20 @@ class SSA(TTAMethod):
                                    dampening=self.cfg.OPTIM.DAMPENING,
                                    weight_decay=self.cfg.OPTIM.WD,
                                    nesterov=self.cfg.OPTIM.NESTEROV)
-        
-    @torch.no_grad()
-    def bayesian_filtering(
-        self,
-        sigma_t=None
-    ): 
-        # 1. Inference variance
-        K_t = self.bf_parameters["kappa"]
-        
-        if not self.full_flag:
-            step = None
-        else:
-            R = 1e-9
-            C = P_t = K_t / (1 - K_t) * R
-            step = C ** 2 / (R * self.lr**2 * sigma_t)
-            if step >= 4.0:
-                logger.warning(f"Abnormal samples are detected {step.item()}.")
-                step = 4.0
-            
-        # 2. Inference mean
-        src_model, model, hidden_model = self.models
-        prev_model = self.prev_model
-        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
-        total_numel = 0
-        total_delta_g = 0.0
-        for models_param in zip_models:
-            src_param, param, hidden_param, prev_param = models_param
-            if param.requires_grad:
-                fp32_param = to_float(param[:].data[:])
-                fp32_src_param = to_float(src_param[:].data[:])
-                fp32_hidden_param = to_float(hidden_param[:].data[:])
-                fp32_prev_param = to_float(prev_param[:].data[:])
-                
-                # (KF2) Prediction step with KF2
-                delta_a = fp32_hidden_param - fp32_src_param
-                predicted_parm = fp32_hidden_param - 0.01 * delta_a
-                # (KF1) Prediction step with KF1 under steady state assumption at t-1
-                delta_g = (fp32_prev_param - fp32_param) / self.lr
-                if self.full_flag:
-                    delta_g = delta_g * step
-                    fp32_param = fp32_prev_param - delta_g * self.lr
-                total_delta_g += delta_g.sum()
-                total_numel += delta_g.numel()
-                
-                # (KF2) Update step with KF2
-                hidden_param_updated = predicted_parm - K_t * (predicted_parm - fp32_param)
-                hidden_param.data[:] = hidden_param_updated.half()
-                # (KF1) Update step with KF1
-                param.data[:] = (fp32_param - 0.01 * (fp32_param - hidden_param_updated)).half()
-                
-        delta_g = total_delta_g / total_numel
-        self.sde_buffering(delta_g)
-                
-        return model, hidden_model, step
     
+    @torch.no_grad()
+    def sde_buffering(self, value):
+        if self.current_size < self.buffer_size:
+            self.sde_buffer_mean[self.current_size] = value
+            self.sde_buffer_var[self.current_size] = value ** 2
+            self.current_size += 1
+        else:
+            self.full_flag = True
+            self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
+            self.sde_buffer_mean[-1] = value
+            self.sde_buffer_var[:-1] = self.sde_buffer_var[1:].clone() 
+            self.sde_buffer_var[-1] = value ** 2
+            
     @torch.no_grad()
     def estimate_variance(self):
         observation = self.model.state_dict()
@@ -185,7 +132,69 @@ class SSA(TTAMethod):
             + delta_g ** 2
         
         return sigma_t
+    
+    @torch.no_grad()
+    def bayesian_filtering(
+        self,
+    ): 
+        sigma_t = self.estimate_variance()
         
+        # 1. Inference variance
+        K_t_2 = self.bf_parameters["kappa_2"]
+        K_t_1 = self.bf_parameters["kappa_1"]
+        
+        if not self.full_flag:
+            step = None
+        else:
+            R = self.bf_parameters["r"]
+            C = P_t = K_t_2 / (1 - K_t_2) * R
+            step = C ** 2 / (R * self.lr**2 * sigma_t)
+            if step >= 4.0:
+                # logger.warning(f"Abnormal samples are detected {step.item()}.")
+                step = 4.0
+            
+        # 2. Inference mean
+        src_model, model, hidden_model = self.models
+        prev_model = self.prev_model
+        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
+        total_numel = 0
+        total_delta_g = 0.0
+        for models_param in zip_models:
+            src_param, param, hidden_param, prev_param = models_param
+            if param.requires_grad:
+                fp32_param = to_float(param[:].data[:])
+                fp32_prev_param = to_float(prev_param[:].data[:])
+                fp32_src_param = to_float(src_param[:].data[:])
+                fp32_hidden_param = to_float(hidden_param[:].data[:])
+                
+                # (KF2) Prediction step with KF2
+                delta_a = fp32_hidden_param - fp32_src_param
+                predicted_hidden_param = fp32_hidden_param - self.bf_parameters["lr_a"] * delta_a
+                # (KF1) Prediction step with KF1 under steady state assumption at t-1
+                delta_g = (fp32_prev_param - fp32_param) / self.lr
+                if self.full_flag:
+                    delta_g = delta_g * step
+                    predicted_param = fp32_prev_param - self.lr * delta_g
+                else:
+                    predicted_param = fp32_param
+                total_delta_g += delta_g.sum()
+                total_numel += delta_g.numel()
+                
+                # (KF2) Update step with KF2
+                updated_hidden_param = predicted_hidden_param - K_t_2 * (predicted_hidden_param - fp32_param)
+                hidden_param.data[:] = updated_hidden_param.half()
+                # (KF1) Update step with KF1
+                updated_param = predicted_param - K_t_1 * (predicted_param - fp32_hidden_param)
+                param.data[:] = updated_param.half()
+                
+        if total_numel > 0:
+            delta_g = total_delta_g / total_numel
+            self.sde_buffering(delta_g)
+        else:
+            raise ValueError()
+                
+        return model, hidden_model, step
+    
     def loss_calculation(self, x):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
@@ -244,8 +253,7 @@ class SSA(TTAMethod):
             self.optimizer.zero_grad()    
 
         with torch.no_grad():
-            sigma_t = self.estimate_variance()
-            self.model, self.hidden_model, step = self.bayesian_filtering(sigma_t)
+            self.model, self.hidden_model, step = self.bayesian_filtering()
             if step is not None:
                 self.accum_step += step
                 self.num_accum += 1
