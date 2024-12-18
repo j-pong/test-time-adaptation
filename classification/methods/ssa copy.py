@@ -132,7 +132,7 @@ class SSA(TTAMethod):
         prev_model = self.prev_model
         zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
         total_numel = 0
-        total_delta_g = 0.0
+        total_delta = 0.0
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
@@ -141,25 +141,25 @@ class SSA(TTAMethod):
                 fp32_hidden_param = to_float(hidden_param[:].data[:])
                 fp32_prev_param = to_float(prev_param[:].data[:])
                 
-                # (KF2) Prediction step with KF2
-                delta_a = fp32_hidden_param - fp32_src_param
-                predicted_parm = fp32_hidden_param - 0.01 * delta_a
-                # (KF1) Prediction step with KF1 under steady state assumption at t-1
+                # A. predict step
                 delta_g = (fp32_prev_param - fp32_param) / self.lr
+                delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
                 if self.full_flag:
-                    delta_g = delta_g * step
-                    fp32_param = fp32_prev_param - delta_g * self.lr
-                total_delta_g += delta_g.sum()
-                total_numel += delta_g.numel()
+                    delta = step * (delta_g + 0.01 * delta_a)
+                else:
+                    delta = 0.01 * delta_a
+                total_delta += delta.sum()
+                total_numel += delta.numel()
+                predicted_parm = fp32_hidden_param - self.lr * delta
                 
-                # (KF2) Update step with KF2
+                # B. update step
                 hidden_param_updated = predicted_parm - K_t * (predicted_parm - fp32_param)
                 hidden_param.data[:] = hidden_param_updated.half()
-                # (KF1) Update step with KF1
-                param.data[:] = (fp32_param - 0.01 * (fp32_param - hidden_param_updated)).half()
                 
-        delta_g = total_delta_g / total_numel
-        self.sde_buffering(delta_g)
+                # C. transfer step for new observation
+                param.data[:] = (self.bf_parameters["c"] * (fp32_param - hidden_param_updated) + hidden_param_updated).half()
+        delta = total_delta / total_numel
+        self.sde_buffering(delta)
                 
         return model, hidden_model, step
     
@@ -167,22 +167,29 @@ class SSA(TTAMethod):
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
+        src_observation = self.src_model.state_dict()
+        hideen_observation = self.hidden_model.state_dict()
+        
         total_numel = 0
-        total_delta_g = 0.0
+        total_delta = 0.0
         for k in self.learnable_model_state.keys():
-            fp32_param = to_float(observation[k][:].data[:])
-            fp32_prev_param = to_float(prev_observation[k][:].data[:])
+            param = to_float(observation[k][:].data[:])
+            prev_param = to_float(prev_observation[k][:].data[:])
+            src_param = to_float(src_observation[k][:].data[:])
+            hidden_param = to_float(hideen_observation[k][:].data[:])
             
-            delta_g = (fp32_prev_param - fp32_param) / self.lr # approximation
+            delta_g = (prev_param - param) / self.lr # approximation
+            delta_a = (hidden_param - src_param) / self.lr # approximation
+            delta = delta_g + 0.01 * delta_a
             
-            total_delta_g += delta_g.sum()
-            total_numel += delta_g.numel()
+            total_delta += delta.sum() 
+            total_numel += delta.numel()
             
-        delta_g = total_delta_g / total_numel
+        delta = total_delta / total_numel
         
         sigma_t = self.sde_buffer_var.sum() / self.buffer_size \
-            - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta_g \
-            + delta_g ** 2
+            - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta \
+            + delta ** 2
         
         return sigma_t
         
