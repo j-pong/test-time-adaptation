@@ -294,6 +294,14 @@ _C.TPT.N_CTX = 4                    # Number of tunable context tokens
 _C.TPT.CTX_INIT = "a_photo_of_a"    # Context initialization
 _C.TPT.CLASS_TOKEN_POS = "end"      # Position of the class token. Choose from: [end, middle, front]
 
+# ------------------------------- TPT options ----------------------------- #
+_C.SSA = CfgNode()
+
+_C.SSA.KAPPA_0 = 0.01 # CMF
+_C.SSA.KAPPA_1 = 0.06 # CMF
+_C.SSA.KAPPA_2 = 0.02
+_C.SSA.EPS = 1e-8
+
 # ------------------------------- Source options -------------------------- #
 _C.SOURCE = CfgNode()
 

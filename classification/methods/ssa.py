@@ -58,10 +58,11 @@ class SSA(TTAMethod):
             
         ## Bayesian filtering parameters
         self.bf_parameters = {
-            "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * 0.01,
-            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * 0.06, 
-            "lr_a": torch.ones(1, requires_grad=False).float().cuda() * 0.01,
-            "r": torch.ones(1, requires_grad=False).float().cuda() * 1e-9}
+            "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
+            "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
+            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2, 
+            "eps": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.EPS
+        }
         
         self.learnable_model_state = {}
         for n, p in model.named_parameters():
@@ -140,13 +141,13 @@ class SSA(TTAMethod):
         sigma_t = self.estimate_variance()
         
         # 1. Inference variance
-        K_t_2 = self.bf_parameters["kappa_2"]
         K_t_1 = self.bf_parameters["kappa_1"]
+        K_t_2 = self.bf_parameters["kappa_2"]
         
         if not self.full_flag:
             step = None
         else:
-            R = self.bf_parameters["r"]
+            R = self.bf_parameters["eps"]
             C = P_t = K_t_2 / (1 - K_t_2) * R
             step = C ** 2 / (R * self.lr**2 * sigma_t)
             if step >= 4.0:
@@ -167,10 +168,10 @@ class SSA(TTAMethod):
                 fp32_src_param = to_float(src_param[:].data[:])
                 fp32_hidden_param = to_float(hidden_param[:].data[:])
                 
-                # (KF2) Prediction step with KF2
+                # (KF1) Prediction step with KF1
                 delta_a = fp32_hidden_param - fp32_src_param
-                predicted_hidden_param = fp32_hidden_param - self.bf_parameters["lr_a"] * delta_a
-                # (KF1) Prediction step with KF1 under steady state assumption at t-1
+                predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * delta_a
+                # (KF2) Prediction step with KF2 under steady state assumption at t-1
                 delta_g = (fp32_prev_param - fp32_param) / self.lr
                 if self.full_flag:
                     delta_g = delta_g * step
@@ -180,11 +181,11 @@ class SSA(TTAMethod):
                 total_delta_g += delta_g.sum()
                 total_numel += delta_g.numel()
                 
-                # (KF2) Update step with KF2
-                updated_hidden_param = predicted_hidden_param - K_t_2 * (predicted_hidden_param - fp32_param)
-                hidden_param.data[:] = updated_hidden_param.half()
                 # (KF1) Update step with KF1
-                updated_param = predicted_param - K_t_1 * (predicted_param - fp32_hidden_param)
+                updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - fp32_param)
+                hidden_param.data[:] = updated_hidden_param.half()
+                # (KF2) Update step with KF2
+                updated_param = predicted_param - K_t_2 * (predicted_param - fp32_hidden_param)
                 param.data[:] = updated_param.half()
                 
         if total_numel > 0:
