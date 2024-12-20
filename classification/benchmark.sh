@@ -1,7 +1,7 @@
 export ROOT_PATH=$PWD
 # dataset
-export settings=(correlated)
-export dataset=(imagenet_d109)
+export settings=(mixed_domains)
+export dataset=(imagenet_c imagenet_d109)
 
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
 GPUS=($(seq 0 $((NUM_GPUS-1))))
@@ -14,6 +14,33 @@ options=("$4")
 tag="$5"
 
 host_name="$6"
+
+# order1=('gaussian_noise' 'shot_noise' 'impulse_noise'
+#         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
+#         'snow' 'frost' 'fog' 'brightness' 'contrast'
+#         'elastic_transform' 'pixelate' 'jpeg_compression')
+
+# order2=('defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
+#         'snow' 'frost' 'fog' 'brightness' 'contrast'
+#         'elastic_transform' 'pixelate' 'jpeg_compression'
+#         'gaussian_noise' 'shot_noise' 'impulse_noise')
+
+# order3=('snow' 'frost' 'fog' 'brightness' 'contrast'
+#         'elastic_transform' 'pixelate' 'jpeg_compression'
+#         'gaussian_noise' 'shot_noise' 'impulse_noise'
+#         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur')
+
+# order4=('elastic_transform' 'pixelate' 'jpeg_compression'
+#         'gaussian_noise' 'shot_noise' 'impulse_noise'
+#         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
+#         'snow' 'frost' 'fog' 'brightness' 'contrast')
+
+# order1_json='["'$(printf '%s","' "${order1[@]}" | sed 's/,"$//')']'
+# order2_json='["'$(printf '%s","' "${order2[@]}" | sed 's/,"$//')']'
+# order3_json='["'$(printf '%s","' "${order3[@]}" | sed 's/,"$//')']'
+# order4_json='["'$(printf '%s","' "${order4[@]}" | sed 's/,"$//')']'
+
+current_order="$order1_json"
 
 for setting in ${settings[*]}; do
 	if [ "$setting" = "correlated" ] || [ "$setting" = "mixed_correlated" ]; then
@@ -31,6 +58,7 @@ for setting in ${settings[*]}; do
 	# ================== #
 	# start default loop #
 	# ================== #
+	# for current_order in "$order2_json" "$order3_json" "$order4_json"; do
 	for ds in ${dataset[*]}; do
 		if [ "$ds" = "imagenet_c" ]; then
 			# Default Dataset
@@ -50,6 +78,7 @@ for setting in ${settings[*]}; do
 						CUDA_VISIBLE_DEVICES=${GPUS[i % ${NUM_GPUS}]} python test_time.py --cfg $var \
 							SETTING $setting RNG_SEED $seed TEST.DELTA_DIRICHLET $delta \
 							MODEL.ARCH $arch OPTIM.LR $lr MIXED_PRECISION $MIXED_PRECISION \
+							CORRUPTION.TYPE "$current_order" \
 							SAVE_DIR $save_dir $options & \
 						i=$((i + 1))
 					done
@@ -92,6 +121,7 @@ for setting in ${settings[*]}; do
 			--subject "[${host_name}] PIKA ${method}_${setting}${delta}_${ds}_${tag}" \
 			--body "$(cat ${res_file})"
 	done
+	# done
 	# ================ #
 	# end default loop #
 	# ================ #

@@ -299,8 +299,8 @@ _C.SSA = CfgNode()
 
 _C.SSA.KAPPA_0 = 0.01 # CMF
 _C.SSA.KAPPA_1 = 0.06 # CMF
-_C.SSA.KAPPA_2 = 0.02
-_C.SSA.EPS = 1e-8
+_C.SSA.KAPPA_2 = 0.01
+_C.SSA.EPS = 1e-9
 
 # ------------------------------- Source options -------------------------- #
 _C.SOURCE = CfgNode()

@@ -115,6 +115,7 @@ class SSA(TTAMethod):
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
+        
         total_numel = 0
         total_delta_g = 0.0
         for k in self.learnable_model_state.keys():
@@ -148,8 +149,8 @@ class SSA(TTAMethod):
             step = None
         else:
             R = self.bf_parameters["eps"]
-            C = P_t = K_t_2 / (1 - K_t_2) * R
-            step = C ** 2 / (R * self.lr**2 * sigma_t)
+            C = P_t = K_t_1 / (1 - K_t_1) * R
+            step = C ** 2 / (R * self.lr ** 2 * sigma_t)
             if step >= 4.0:
                 # logger.warning(f"Abnormal samples are detected {step.item()}.")
                 step = 4.0
@@ -157,9 +158,10 @@ class SSA(TTAMethod):
         # 2. Inference mean
         src_model, model, hidden_model = self.models
         prev_model = self.prev_model
-        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
+        
         total_numel = 0
         total_delta_g = 0.0
+        zip_models = zip(src_model.parameters(), model.parameters(), hidden_model.parameters(), prev_model.parameters())
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
@@ -169,8 +171,8 @@ class SSA(TTAMethod):
                 fp32_hidden_param = to_float(hidden_param[:].data[:])
                 
                 # (KF1) Prediction step with KF1
-                delta_a = fp32_hidden_param - fp32_src_param
-                predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * delta_a
+                delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
+                predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * self.lr * delta_a
                 # (KF2) Prediction step with KF2 under steady state assumption at t-1
                 delta_g = (fp32_prev_param - fp32_param) / self.lr
                 if self.full_flag:
