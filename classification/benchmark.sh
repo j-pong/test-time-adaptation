@@ -35,7 +35,7 @@ order1=('gaussian_noise' 'shot_noise' 'impulse_noise'
 #         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
 #         'snow' 'frost' 'fog' 'brightness' 'contrast')
 
-# order1_json='["'$(printf '%s","' "${order1[@]}" | sed 's/,"$//')']'
+order1_json='["'$(printf '%s","' "${order1[@]}" | sed 's/,"$//')']'
 # order2_json='["'$(printf '%s","' "${order2[@]}" | sed 's/,"$//')']'
 # order3_json='["'$(printf '%s","' "${order3[@]}" | sed 's/,"$//')']'
 # order4_json='["'$(printf '%s","' "${order4[@]}" | sed 's/,"$//')']'
