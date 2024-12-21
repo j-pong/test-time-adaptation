@@ -145,7 +145,7 @@ class SSA(TTAMethod):
     def bayesian_filtering(
         self,
     ): 
-        sigma_t, R = self.estimate_variance()
+        sigma_t, _ = self.estimate_variance()
         
         # 1. Inference variance
         K_t_1 = self.bf_parameters["kappa_1"]
@@ -154,11 +154,13 @@ class SSA(TTAMethod):
         if not self.full_flag:
             step = None
         else:
-            C = K_t_2 / (1 - K_t_2) * R
+            R = self.bf_parameters["eps"]
+            C = K_t_1 / (1 - K_t_1) * R
             step = C ** 2 / (R * self.lr ** 2 * sigma_t)
             if step >= 4.0:
                 # logger.warning(f"Abnormal samples are detected {step.item()}.")
                 step = 4.0
+            # step = 1.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -189,10 +191,10 @@ class SSA(TTAMethod):
                 total_numel += delta_g.numel()
                 
                 # (KF1) Update step with KF1
-                updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - fp32_param)
+                updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - predicted_param)
                 hidden_param.data[:] = updated_hidden_param.half()
                 # (KF2) Update step with KF2
-                updated_param = predicted_param - K_t_2 * (predicted_param - fp32_hidden_param)
+                updated_param = predicted_param - K_t_2 * (predicted_param - predicted_hidden_param)
                 param.data[:] = updated_param.half()
                 
         if total_numel > 0:
