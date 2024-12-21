@@ -115,31 +115,37 @@ class SSA(TTAMethod):
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
+        latent_variable = self.src_model.state_dict()
         
         total_numel = 0
         total_delta_g = 0.0
+        total_r_hat = 0.0
         for k in self.learnable_model_state.keys():
             fp32_param = to_float(observation[k][:].data[:])
             fp32_prev_param = to_float(prev_observation[k][:].data[:])
+            fp32_hidden_param = to_float(latent_variable[k][:].data[:])
             
             delta_g = (fp32_prev_param - fp32_param) / self.lr # approximation
+            r_hat = (fp32_hidden_param - fp32_param) # approximation
             
             total_delta_g += delta_g.sum()
+            total_r_hat += r_hat.sum()
             total_numel += delta_g.numel()
             
         delta_g = total_delta_g / total_numel
+        r_hat = (total_r_hat / total_numel) ** 2
         
         sigma_t = self.sde_buffer_var.sum() / self.buffer_size \
             - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta_g \
             + delta_g ** 2
         
-        return sigma_t
+        return sigma_t, r_hat
     
     @torch.no_grad()
     def bayesian_filtering(
         self,
     ): 
-        sigma_t = self.estimate_variance()
+        sigma_t, R = self.estimate_variance()
         
         # 1. Inference variance
         K_t_1 = self.bf_parameters["kappa_1"]
@@ -148,8 +154,7 @@ class SSA(TTAMethod):
         if not self.full_flag:
             step = None
         else:
-            R = self.bf_parameters["eps"]
-            C = P_t = K_t_1 / (1 - K_t_1) * R
+            C = K_t_2 / (1 - K_t_2) * R
             step = C ** 2 / (R * self.lr ** 2 * sigma_t)
             if step >= 4.0:
                 # logger.warning(f"Abnormal samples are detected {step.item()}.")
