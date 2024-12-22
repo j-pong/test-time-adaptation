@@ -148,7 +148,6 @@ class SSA(TTAMethod):
         sigma_t, R_t = self.estimate_variance()
         
         # 1. Inference variance
-        K_t_1 = self.bf_parameters["kappa_1"]
         K_t_2 = self.bf_parameters["kappa_2"]
         
         if not self.full_flag:
@@ -190,7 +189,7 @@ class SSA(TTAMethod):
                 
                 if dual_kf:
                     # (KF1) Update step with KF1
-                    updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - predicted_param)
+                    updated_hidden_param = predicted_hidden_param - self.bf_parameters["kappa_1"] * (predicted_hidden_param - predicted_param)
                     hidden_param.data[:] = updated_hidden_param.half()
                 else:
                     updated_hidden_param = fp32_src_param
