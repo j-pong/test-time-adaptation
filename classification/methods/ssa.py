@@ -58,8 +58,8 @@ class SSA(TTAMethod):
             
         ## Bayesian filtering parameters
         self.bf_parameters = {
-            # "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
-            # "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
+            "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
+            "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
             "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2, 
         }
         
@@ -114,7 +114,7 @@ class SSA(TTAMethod):
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
-        reference_observation = self.src_model.state_dict()
+        reference_observation = self.hidden_model.state_dict()
         
         total_numel = 0
         total_delta_g = 0.0
@@ -143,24 +143,21 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def bayesian_filtering(
         self,
+        dual_kf=False
     ): 
         sigma_t, R_t = self.estimate_variance()
         
         # 1. Inference variance
-        # K_t_1 = self.bf_parameters["kappa_1"]
+        K_t_1 = self.bf_parameters["kappa_1"]
         K_t_2 = self.bf_parameters["kappa_2"]
         
         if not self.full_flag:
             step = None
         else:
-            step = K_t_2 / (1 - K_t_2) * (R_t * K_t_2) / (self.lr ** 2 * sigma_t)
-            print(step)
+            step = K_t_2 / (1 - K_t_2) * (R_t * K_t_2) / (self.lr ** 2 * sigma_t) * 10
             if step >= 4.0:
                 # logger.warning(f"Abnormal samples are detected {step.item()}.")
                 step = 4.0
-            # elif step <= 1.0:
-                # step = 1.0
-            step = 1.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -172,14 +169,15 @@ class SSA(TTAMethod):
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
-                # fp32_hidden_param = to_float(hidden_param[:].data[:])
                 fp32_param = to_float(param[:].data[:])
                 fp32_prev_param = to_float(prev_param[:].data[:])
                 fp32_src_param = to_float(src_param[:].data[:])
                 
-                # # (KF1) Prediction step with KF1
-                # delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
-                # predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * self.lr * delta_a
+                if dual_kf:
+                    # (KF1) Prediction step with KF1
+                    fp32_hidden_param = to_float(hidden_param[:].data[:])
+                    delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
+                    predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * self.lr * delta_a
                 # (KF2) Prediction step with KF2 under steady state assumption at t-1
                 delta_g = (fp32_prev_param - fp32_param) / self.lr
                 if self.full_flag:
@@ -190,11 +188,14 @@ class SSA(TTAMethod):
                 total_delta_g += delta_g.sum()
                 total_numel += delta_g.numel()
                 
-                # # (KF1) Update step with KF1
-                # updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - predicted_param)
-                # hidden_param.data[:] = updated_hidden_param.half()
+                if dual_kf:
+                    # (KF1) Update step with KF1
+                    updated_hidden_param = predicted_hidden_param - K_t_1 * (predicted_hidden_param - predicted_param)
+                    hidden_param.data[:] = updated_hidden_param.half()
+                else:
+                    updated_hidden_param = fp32_src_param
                 # (KF2) Update step with KF2
-                updated_param = predicted_param - K_t_2 * (predicted_param - fp32_src_param)
+                updated_param = predicted_param - K_t_2 * (predicted_param - updated_hidden_param)
                 param.data[:] = updated_param.half()
                 
         if total_numel > 0:
