@@ -68,7 +68,7 @@ class SSA(TTAMethod):
             if p.requires_grad:
                 self.learnable_model_state[n] = p.clone().detach()
         self.current_size = 0
-        self.buffer_size = 64
+        self.buffer_size = 96 * 2
         self.full_flag = False
         self.register_buffer('sde_buffer_mean', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('sde_buffer_var', torch.zeros(self.buffer_size).float().cuda())
@@ -145,18 +145,25 @@ class SSA(TTAMethod):
         self,
         dual_kf=False
     ): 
-        sigma_t, R_t = self.estimate_variance()
+        sigma_t, R_t_hat = self.estimate_variance()
         
         # 1. Inference variance
         K_t_2 = self.bf_parameters["kappa_2"]
         
         if not self.full_flag:
-            step = None
+            step = 1.0
         else:
-            step = K_t_2 / (1 - K_t_2) * (R_t * K_t_2) / (self.lr ** 2 * sigma_t) * 10
+            R_t = 1e-8
+            step = K_t_2 ** 2 / (1 - K_t_2) * R_t / (self.lr ** 2 * sigma_t)
+            # Q_t = self.lr ** 2 * sigma_t * step
+            # K_t_2 = (R_t_hat * K_t_2 + Q_t) / (R_t_hat * K_t_2 + Q_t + R_t)
+            # print(R_t_hat)
             if step >= 4.0:
                 # logger.warning(f"Abnormal samples are detected {step.item()}.")
                 step = 4.0
+            elif step <= 0.25:
+                step = 0.25
+            # step = 1.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
