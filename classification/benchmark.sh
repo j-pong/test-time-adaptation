@@ -1,6 +1,6 @@
 export ROOT_PATH=$PWD
 # dataset
-export settings=(correlated)
+export settings=(continual correlated)
 export dataset=(imagenet_c imagenet_d109)
 
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
@@ -20,25 +20,25 @@ order1=('gaussian_noise' 'shot_noise' 'impulse_noise'
         'snow' 'frost' 'fog' 'brightness' 'contrast'
         'elastic_transform' 'pixelate' 'jpeg_compression')
 
-# order2=('defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
-#         'snow' 'frost' 'fog' 'brightness' 'contrast'
-#         'elastic_transform' 'pixelate' 'jpeg_compression'
-#         'gaussian_noise' 'shot_noise' 'impulse_noise')
+order2=('defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
+        'snow' 'frost' 'fog' 'brightness' 'contrast'
+        'elastic_transform' 'pixelate' 'jpeg_compression'
+        'gaussian_noise' 'shot_noise' 'impulse_noise')
 
-# order3=('snow' 'frost' 'fog' 'brightness' 'contrast'
-#         'elastic_transform' 'pixelate' 'jpeg_compression'
-#         'gaussian_noise' 'shot_noise' 'impulse_noise'
-#         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur')
+order3=('snow' 'frost' 'fog' 'brightness' 'contrast'
+        'elastic_transform' 'pixelate' 'jpeg_compression'
+        'gaussian_noise' 'shot_noise' 'impulse_noise'
+        'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur')
 
-# order4=('elastic_transform' 'pixelate' 'jpeg_compression'
-#         'gaussian_noise' 'shot_noise' 'impulse_noise'
-#         'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
-#         'snow' 'frost' 'fog' 'brightness' 'contrast')
+order4=('elastic_transform' 'pixelate' 'jpeg_compression'
+        'gaussian_noise' 'shot_noise' 'impulse_noise'
+        'defocus_blur' 'glass_blur' 'motion_blur' 'zoom_blur'
+        'snow' 'frost' 'fog' 'brightness' 'contrast')
 
 order1_json='["'$(printf '%s","' "${order1[@]}" | sed 's/,"$//')']'
-# order2_json='["'$(printf '%s","' "${order2[@]}" | sed 's/,"$//')']'
-# order3_json='["'$(printf '%s","' "${order3[@]}" | sed 's/,"$//')']'
-# order4_json='["'$(printf '%s","' "${order4[@]}" | sed 's/,"$//')']'
+order2_json='["'$(printf '%s","' "${order2[@]}" | sed 's/,"$//')']'
+order3_json='["'$(printf '%s","' "${order3[@]}" | sed 's/,"$//')']'
+order4_json='["'$(printf '%s","' "${order4[@]}" | sed 's/,"$//')']'
 
 current_order="$order1_json"
 

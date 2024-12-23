@@ -143,9 +143,9 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def bayesian_filtering(
         self,
-        dual_kf=False
+        dual_kf=True
     ): 
-        sigma_t, R_t_hat = self.estimate_variance()
+        sigma_t, _ = self.estimate_variance()
         
         # 1. Inference variance
         K_t_2 = self.bf_parameters["kappa_2"]
@@ -153,17 +153,16 @@ class SSA(TTAMethod):
         if not self.full_flag:
             step = 1.0
         else:
+            K = 0.01 if dual_kf else 0.01
             R_t = 1e-8
-            step = K_t_2 ** 2 / (1 - K_t_2) * R_t / (self.lr ** 2 * sigma_t)
+            S = K ** 2 / (1 - K)
+            step = (S * R_t) / (self.lr ** 2 * sigma_t) # TODO: K_t_2 ** 2 / (1 - K_t_2) this is so sensitive
             # Q_t = self.lr ** 2 * sigma_t * step
             # K_t_2 = (R_t_hat * K_t_2 + Q_t) / (R_t_hat * K_t_2 + Q_t + R_t)
-            # print(R_t_hat)
             if step >= 4.0:
-                # logger.warning(f"Abnormal samples are detected {step.item()}.")
                 step = 4.0
             elif step <= 0.25:
                 step = 0.25
-            # step = 1.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -206,6 +205,7 @@ class SSA(TTAMethod):
                 
         if total_numel > 0:
             delta_g = total_delta_g / total_numel
+            # logger.info(f"{self.sde_buffer_var.sum() / self.buffer_size}")
             self.sde_buffering(delta_g)
         else:
             raise ValueError()
