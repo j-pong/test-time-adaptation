@@ -153,7 +153,7 @@ class SSA(TTAMethod):
         if not self.full_flag:
             step = 1.0
         else:
-            K = 0.01 if dual_kf else 0.01
+            K = self.bf_parameters["kappa_2"] # 0.01 if dual_kf else 0.01
             R_t = 1e-8
             S = K ** 2 / (1 - K)
             step = (S * R_t) / (self.lr ** 2 * sigma_t) # TODO: K_t_2 ** 2 / (1 - K_t_2) this is so sensitive
