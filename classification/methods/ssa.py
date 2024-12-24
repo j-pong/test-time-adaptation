@@ -57,10 +57,12 @@ class SSA(TTAMethod):
             param.detach_()
             
         ## Bayesian filtering parameters
+        self.dual_kf = self.cfg.SSA.DUAL_KF
         self.bf_parameters = {
             "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
             "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
-            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2, 
+            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2,
+            "S": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.EPS,
         }
         
         self.learnable_model_state = {}
@@ -143,22 +145,15 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def bayesian_filtering(
         self,
-        dual_kf=True
     ): 
         sigma_t, _ = self.estimate_variance()
         
         # 1. Inference variance
-        K_t_2 = self.bf_parameters["kappa_2"]
-        
         if not self.full_flag:
             step = 1.0
         else:
-            K = self.bf_parameters["kappa_2"] # 0.01 if dual_kf else 0.01
-            R_t = 1e-8
-            S = K ** 2 / (1 - K)
-            step = (S * R_t) / (self.lr ** 2 * sigma_t) # TODO: K_t_2 ** 2 / (1 - K_t_2) this is so sensitive
-            # Q_t = self.lr ** 2 * sigma_t * step
-            # K_t_2 = (R_t_hat * K_t_2 + Q_t) / (R_t_hat * K_t_2 + Q_t + R_t)
+            S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
+            step = S / (self.lr ** 2 * sigma_t) # TODO: K_t_2 ** 2 / (1 - K_t_2) this is so sensitive
             if step >= 4.0:
                 step = 4.0
             elif step <= 0.25:
@@ -178,7 +173,7 @@ class SSA(TTAMethod):
                 fp32_prev_param = to_float(prev_param[:].data[:])
                 fp32_src_param = to_float(src_param[:].data[:])
                 
-                if dual_kf:
+                if self.dual_kf:
                     # (KF1) Prediction step with KF1
                     fp32_hidden_param = to_float(hidden_param[:].data[:])
                     delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
@@ -193,14 +188,14 @@ class SSA(TTAMethod):
                 total_delta_g += delta_g.sum()
                 total_numel += delta_g.numel()
                 
-                if dual_kf:
+                if self.dual_kf:
                     # (KF1) Update step with KF1
                     updated_hidden_param = predicted_hidden_param - self.bf_parameters["kappa_1"] * (predicted_hidden_param - predicted_param)
                     hidden_param.data[:] = updated_hidden_param.half()
                 else:
                     updated_hidden_param = fp32_src_param
                 # (KF2) Update step with KF2
-                updated_param = predicted_param - K_t_2 * (predicted_param - updated_hidden_param)
+                updated_param = predicted_param - self.bf_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
                 param.data[:] = updated_param.half()
                 
         if total_numel > 0:

@@ -297,10 +297,12 @@ _C.TPT.CLASS_TOKEN_POS = "end"      # Position of the class token. Choose from: 
 # ------------------------------- TPT options ----------------------------- #
 _C.SSA = CfgNode()
 
+_C.SSA.KAPPA_2 = 0.01
+_C.SSA.EPS = 1e-12
+
+_C.SSA.DUAL_KF = False
 _C.SSA.KAPPA_0 = 0.01 # CMF
 _C.SSA.KAPPA_1 = 0.06 # CMF
-_C.SSA.KAPPA_2 = 0.01
-_C.SSA.EPS = 1e-10
 
 # ------------------------------- Source options -------------------------- #
 _C.SOURCE = CfgNode()
