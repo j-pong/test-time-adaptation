@@ -73,10 +73,11 @@ class SSA(TTAMethod):
         self.buffer_size = 96 * 2
         self.full_flag = False
         self.register_buffer('sde_buffer_mean', torch.zeros(self.buffer_size).float().cuda())
-        self.register_buffer('sde_buffer_var', torch.zeros(self.buffer_size).float().cuda())
         
         self.accum_step = torch.zeros(1, requires_grad=False).float().cuda()
         self.num_accum = 0.0
+        
+        self.real_time = torch.zeros(1, requires_grad=False).float().cuda()
         
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
@@ -103,61 +104,57 @@ class SSA(TTAMethod):
     def sde_buffering(self, value):
         if self.current_size < self.buffer_size:
             self.sde_buffer_mean[self.current_size] = value
-            self.sde_buffer_var[self.current_size] = value ** 2
-            self.current_size += 1
         else:
             self.full_flag = True
             self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
             self.sde_buffer_mean[-1] = value
-            self.sde_buffer_var[:-1] = self.sde_buffer_var[1:].clone() 
-            self.sde_buffer_var[-1] = value ** 2
-            
+        self.current_size += 1
+        
     @torch.no_grad()
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
-        reference_observation = self.hidden_model.state_dict()
+        reference_observation = self.src_model.state_dict()
         
         total_numel = 0
         total_delta_g = 0.0
-        total_r_hat = 0.0
+        total_total_g = 0.0
         for k in self.learnable_model_state.keys():
             fp32_param = to_float(observation[k][:].data[:])
             fp32_prev_param = to_float(prev_observation[k][:].data[:])
             fp32_src_param = to_float(reference_observation[k][:].data[:])
             
             delta_g = (fp32_prev_param - fp32_param) / self.lr # approximation
-            r_hat = (fp32_src_param - fp32_param) # approximation
+            total_g = (fp32_src_param - fp32_param) / (self.real_time + self.lr) * self.current_size # approximation
             
             total_delta_g += delta_g.sum()
-            total_r_hat += r_hat.sum()
+            total_total_g += total_g.sum()
             total_numel += delta_g.numel()
             
         delta_g = total_delta_g / total_numel
-        r_hat = (total_r_hat / total_numel) ** 2
+        total_g = total_total_g / total_numel
+        # total_g = (self.sde_buffer_mean.sum() + delta_g) / (self.buffer_size+1)
         
-        sigma_t = self.sde_buffer_var.sum() / self.buffer_size \
-            - 2 * self.sde_buffer_mean.sum() / self.buffer_size * delta_g \
-            + delta_g ** 2
+        sigma_t = (delta_g - total_g).square()
         
-        return sigma_t, r_hat
+        return sigma_t, total_g
     
     @torch.no_grad()
     def bayesian_filtering(
         self,
     ): 
-        sigma_t, _ = self.estimate_variance()
+        sigma_t, total_g = self.estimate_variance()
         
         # 1. Inference variance
-        if not self.full_flag:
-            step = 1.0
-        else:
+        step = 1.0
+        if self.full_flag:
             S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
-            step = S / (self.lr ** 2 * sigma_t) # TODO: K_t_2 ** 2 / (1 - K_t_2) this is so sensitive
-            if step >= 4.0:
-                step = 4.0
-            elif step <= 0.25:
-                step = 0.25
+            step = S / torch.sqrt(self.lr ** 2 * sigma_t)
+            print(sigma_t, total_g, step)
+            max_step = 4.0
+            if max_step < step:
+                step = max_step
+            # step = 1.0
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -204,6 +201,8 @@ class SSA(TTAMethod):
             self.sde_buffering(delta_g)
         else:
             raise ValueError()
+        
+        self.real_time += step * self.lr
                 
         return model, hidden_model, step
     
