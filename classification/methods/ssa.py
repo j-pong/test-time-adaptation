@@ -60,10 +60,10 @@ class SSA(TTAMethod):
         # Bayesian filtering parameters
         self.dual_kf = self.cfg.SSA.DUAL_KF
         self.bf_parameters = {
-            "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
-            "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
-            "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2,
-            "S": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.SS * cfg.SSA.EPS,
+            "kappa_0": cfg.SSA.KAPPA_0,
+            "kappa_1": cfg.SSA.KAPPA_1,
+            "kappa_2": cfg.SSA.KAPPA_2,
+            "S": cfg.SSA.SS * cfg.SSA.EPS,
         }
         
         # SDE approximation
@@ -159,18 +159,18 @@ class SSA(TTAMethod):
         
         # 1. Inference variance
         step = 1.0
-        if self.full_flag:
-            S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
-            proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
-            print(proposal_step, self.max_step)
-            if proposal_step < self.max_step or self.steady_state:
-                self.steady_state = True
+        # if self.full_flag:
+        #     S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
+        #     proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
+        #     print(proposal_step, self.max_step)
+        #     if proposal_step < self.max_step or self.steady_state:
+        #         self.steady_state = True
                 
-            if self.steady_state:
-                if proposal_step < self.max_step:
-                    step = proposal_step
-                else:
-                    step = self.max_step
+        #     if self.steady_state:
+        #         if proposal_step < self.max_step:
+        #             step = proposal_step
+        #         else:
+        #             step = self.max_step
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -182,9 +182,9 @@ class SSA(TTAMethod):
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
-                fp32_param = to_float(param[:].data[:])
-                fp32_prev_param = to_float(prev_param[:].data[:])
-                fp32_src_param = to_float(src_param[:].data[:])
+                fp32_param = param.data
+                fp32_prev_param = prev_param.data
+                fp32_src_param = src_param.data
                 
                 if self.dual_kf:
                     # (KF1) Prediction step with KF1
@@ -204,12 +204,12 @@ class SSA(TTAMethod):
                 if self.dual_kf:
                     # (KF1) Update step with KF1
                     updated_hidden_param = predicted_hidden_param - self.bf_parameters["kappa_1"] * (predicted_hidden_param - predicted_param)
-                    hidden_param.data[:] = updated_hidden_param.half()
+                    hidden_param = updated_hidden_param
                 else:
                     updated_hidden_param = fp32_src_param
                 # (KF2) Update step with KF2
                 updated_param = predicted_param - self.bf_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
-                param.data[:] = updated_param.half()
+                param = updated_param
                 
         if total_numel > 0:
             delta_g = total_delta_g / total_numel
