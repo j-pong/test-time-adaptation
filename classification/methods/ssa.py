@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.weight_norm import WeightNorm
 
+import numpy as np
 from copy import deepcopy
 from methods.base import TTAMethod
 from models.model import ResNetDomainNet126
@@ -62,7 +63,7 @@ class SSA(TTAMethod):
             "kappa_0": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_0,
             "kappa_1": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_1,
             "kappa_2": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.KAPPA_2,
-            "S": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.EPS,
+            "S": torch.ones(1, requires_grad=False).float().cuda() * cfg.SSA.SS * cfg.SSA.EPS,
         }
         
         # SDE approximation
@@ -73,12 +74,12 @@ class SSA(TTAMethod):
         self.k = 0
         self.buffer_size = 96
         self.full_flag = False
-        self.register_buffer('sde_buffer_mean', torch.zeros(self.buffer_size).float().cuda())
-        self.register_buffer('sde_buffer_time', torch.zeros(self.buffer_size).float().cuda())
+        self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
+        self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
         # Steady-state Detaction
-        self.max_step = 4.0
-        self.steady_state_flag = False
+        self.max_step = np.sqrt(cfg.SSA.SS * 2) 
+        self.steady_state = False
         
         # Monitoring
         self.accum_step = torch.zeros(1, requires_grad=False).float().cuda()
@@ -108,14 +109,14 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def sde_buffering(self, value, step):
         if self.k < self.buffer_size:
-            self.sde_buffer_mean[self.k] = value
-            self.sde_buffer_time[self.k] = step
+            self.gradient_buffer[self.k] = value
+            self.step_buffer[self.k] = step
         else:
             self.full_flag = True
-            self.sde_buffer_mean[:-1] = self.sde_buffer_mean[1:].clone() 
-            self.sde_buffer_mean[-1] = value
-            self.sde_buffer_time[:-1] = self.sde_buffer_time[1:].clone() 
-            self.sde_buffer_time[-1] = step
+            self.gradient_buffer[:-1] = self.gradient_buffer[1:].clone() 
+            self.gradient_buffer[-1] = value
+            self.step_buffer[:-1] = self.step_buffer[1:].clone() 
+            self.step_buffer[-1] = step
         self.k += 1
         
     @torch.no_grad()
@@ -142,27 +143,34 @@ class SSA(TTAMethod):
         delta_g = total_delta_g / total_numel
         total_g = total_total_g / total_numel
         
-        total_time = self.sde_buffer_time.sum()
-        mean_delta_g = self.sde_buffer_mean.sum() / total_time
-        sigma_t = (self.sde_buffer_mean - mean_delta_g).square().sum() + \
+        total_time = self.step_buffer.sum()
+        mean_delta_g = self.gradient_buffer.sum() / total_time
+        var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
             (delta_g - mean_delta_g).square()
-        sigma_t = sigma_t / (total_time+1)
+        var_t = var_t / (total_time+1)
         
-        return sigma_t, total_g ** 2
+        return var_t, total_g ** 2
     
     @torch.no_grad()
     def bayesian_filtering(
         self,
     ): 
-        sigma_t, _ = self.estimate_variance()
+        var_t, _ = self.estimate_variance()
         
         # 1. Inference variance
         step = 1.0
         if self.full_flag:
             S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
-            proposal_step = torch.sqrt(S / (self.lr ** 2 * sigma_t))
-            if proposal_step < self.max_step:
-                step = proposal_step
+            proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
+            print(proposal_step, self.max_step)
+            if proposal_step < self.max_step or self.steady_state:
+                self.steady_state = True
+                
+            if self.steady_state:
+                if proposal_step < self.max_step:
+                    step = proposal_step
+                else:
+                    step = self.max_step
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -205,7 +213,6 @@ class SSA(TTAMethod):
                 
         if total_numel > 0:
             delta_g = total_delta_g / total_numel
-            # logger.info(f"{self.sde_buffer_var.sum() / self.buffer_size}")
             self.sde_buffering(delta_g, step)
         else:
             raise ValueError()
@@ -289,15 +296,6 @@ class SSA(TTAMethod):
         self.load_model_and_optimizer()
         self.class_probs_ema = 1 / self.num_classes * torch.ones(self.num_classes).to(self.device)
         
-        # self.full_flag = False
-        # self.current_size = 0
-        # self.sde_buffer_mean = self.sde_buffer_mean * 0.0
-        # self.sde_buffer_var = self.sde_buffer_var * 0.0
-        
-        # self.hidden_model = deepcopy(self.src_model)
-        # for param in self.hidden_model.parameters():
-        #     param.detach_()
-
     def collect_params(self):
         """Collect the affine scale + shift parameters from normalization layers.
         Walk the model's modules and collect all normalization parameters.
