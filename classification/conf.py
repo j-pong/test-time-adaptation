@@ -299,8 +299,9 @@ _C.SSA = CfgNode()
 
 _C.SSA.KAPPA_2 = 0.01
 _C.SSA.EPS = 1e-12
-_C.SSA.SS = 5.0
+_C.SSA.SS = 1.0
 
+# Active CMF
 _C.SSA.DUAL_KF = True
 _C.SSA.ALPHA = 0.99 # CMF
 _C.SSA.BETA = 0.94 # CMF

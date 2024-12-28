@@ -1,7 +1,7 @@
 export ROOT_PATH=$PWD
 # dataset
 export settings=(continual correlated)
-export dataset=(imagenet_c)
+export dataset=(imagenet_d109)
 
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
 GPUS=($(seq 0 $((NUM_GPUS-1))))

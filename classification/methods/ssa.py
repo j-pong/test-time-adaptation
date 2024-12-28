@@ -79,7 +79,7 @@ class SSA(TTAMethod):
         self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
-        self.max_step = np.sqrt(cfg.SSA.SS * 2) 
+        self.steady_cond = np.sqrt(cfg.SSA.SS * 2) 
         self.steady_state = False
         
         # Monitoring
@@ -124,25 +124,19 @@ class SSA(TTAMethod):
     def estimate_variance(self):
         observation = self.model.state_dict()
         prev_observation = self.prev_model.state_dict()
-        reference_observation = self.src_model.state_dict()
         
         total_numel = 0
         total_delta_g = 0.0
-        total_total_g = 0.0
         for k in self.learnable_model_state.keys():
             fp32_param = to_float(observation[k].data)
             fp32_prev_param = to_float(prev_observation[k].data)
-            fp32_src_param = to_float(reference_observation[k].data)
             
             delta_g = (fp32_prev_param - fp32_param) / self.lr # approximation
-            total_g = (fp32_src_param - fp32_param) / (self.lr * (self.k + 1)) # approximation
             
             total_delta_g += delta_g.sum()
-            total_total_g += total_g.sum()
             total_numel += delta_g.numel()
             
         delta_g = total_delta_g / total_numel
-        total_g = total_total_g / total_numel
         
         local_time = self.buffer_size #self.step_buffer.sum()
         mean_delta_g = self.gradient_buffer.sum() / local_time
@@ -150,13 +144,13 @@ class SSA(TTAMethod):
             (delta_g - mean_delta_g).square()
         var_t = var_t / (local_time+1)
         
-        return var_t, total_g ** 2
+        return var_t
     
     @torch.no_grad()
     def bayesian_filtering(
         self,
     ): 
-        var_t, _ = self.estimate_variance()
+        var_t = self.estimate_variance()
         
         # 1. Inference variance
         step = 1.0
@@ -164,15 +158,11 @@ class SSA(TTAMethod):
             S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
             proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
             
-            if proposal_step < self.max_step or self.steady_state:
+            if proposal_step < self.steady_cond or self.steady_state:
                 self.steady_state = True
                 
             if self.steady_state:
-                # print(proposal_step, self.max_step)
-                # if proposal_step < self.max_step:
                 step = proposal_step
-                # else:
-                    # step = self.max_step
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
