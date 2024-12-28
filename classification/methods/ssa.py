@@ -183,32 +183,32 @@ class SSA(TTAMethod):
         for models_param in zip_models:
             src_param, param, hidden_param, prev_param = models_param
             if param.requires_grad:
-                fp32_param = param.data
-                fp32_prev_param = prev_param.data
-                fp32_src_param = src_param.data
+                param_ = param.data
+                prev_param_ = prev_param.data
+                src_param_ = src_param.data
                 
                 # (CMF) Prediction step
                 if self.dual_kf:
-                    fp32_hidden_param = hidden_param.data
-                    predicted_hidden_param = self.cmf_parameters["alpha"] * fp32_hidden_param + (1 - self.cmf_parameters["alpha"]) * fp32_src_param
+                    hidden_param_ = hidden_param.data
+                    predicted_hidden_param = self.cmf_parameters["alpha"] * hidden_param_ + (1 - self.cmf_parameters["alpha"]) * src_param_
                 # Prediction step
                 if self.full_flag:
-                    predicted_param = (1 - step) * fp32_prev_param + step * fp32_param
+                    predicted_param = (1 - step) * prev_param_ + step * param_
                 else:
-                    predicted_param = fp32_param
+                    predicted_param = param_
                 
                 # (CMF) Update step
                 if self.dual_kf:
                     updated_hidden_param = self.cmf_parameters["beta"] * predicted_hidden_param + (1 -  self.cmf_parameters["beta"]) * predicted_param
                     hidden_param.data = updated_hidden_param
                 else:
-                    updated_hidden_param = fp32_src_param
+                    updated_hidden_param = src_param_
                 # Update step
                 updated_param = predicted_param - self.ssa_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
                 param.data = updated_param
                 
                 # new statistics
-                delta_g = (fp32_prev_param - fp32_param) / self.lr
+                delta_g = (prev_param_ - param_) / self.lr
                 total_delta_g += delta_g.sum()
                 total_numel += delta_g.numel()
                 
