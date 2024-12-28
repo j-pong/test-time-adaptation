@@ -144,11 +144,11 @@ class SSA(TTAMethod):
         delta_g = total_delta_g / total_numel
         total_g = total_total_g / total_numel
         
-        total_time = self.step_buffer.sum()
-        mean_delta_g = self.gradient_buffer.sum() / total_time
+        local_time = self.buffer_size #self.step_buffer.sum()
+        mean_delta_g = self.gradient_buffer.sum() / local_time
         var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
             (delta_g - mean_delta_g).square()
-        var_t = var_t / (total_time+1)
+        var_t = var_t / (local_time+1)
         
         return var_t, total_g ** 2
     
@@ -187,23 +187,23 @@ class SSA(TTAMethod):
                 fp32_prev_param = prev_param.data
                 fp32_src_param = src_param.data
                 
+                # (CMF) Prediction step
                 if self.dual_kf:
-                    # (KF1) Prediction step with KF1
                     fp32_hidden_param = hidden_param.data
                     predicted_hidden_param = self.cmf_parameters["alpha"] * fp32_hidden_param + (1 - self.cmf_parameters["alpha"]) * fp32_src_param
-                # (KF2) Prediction step with KF2 under steady state assumption at t-1
+                # Prediction step
                 if self.full_flag:
                     predicted_param = (1 - step) * fp32_prev_param + step * fp32_param
                 else:
                     predicted_param = fp32_param
                 
+                # (CMF) Update step
                 if self.dual_kf:
-                    # (KF1) Update step with KF1
                     updated_hidden_param = self.cmf_parameters["beta"] * predicted_hidden_param + (1 -  self.cmf_parameters["beta"]) * predicted_param
                     hidden_param.data = updated_hidden_param
                 else:
                     updated_hidden_param = fp32_src_param
-                # (KF2) Update step with KF2
+                # Update step
                 updated_param = predicted_param - self.ssa_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
                 param.data = updated_param
                 
