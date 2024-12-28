@@ -160,18 +160,19 @@ class SSA(TTAMethod):
         
         # 1. Inference variance
         step = 1.0
-        # if self.full_flag:
-        #     S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
-        #     proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
-        #     if proposal_step < self.max_step or self.steady_state:
-        #         self.steady_state = True
+        if self.full_flag:
+            S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
+            proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
+            
+            if proposal_step < self.max_step or self.steady_state:
+                self.steady_state = True
                 
-        #     if self.steady_state:
-        #         print(proposal_step, self.max_step)
-        #         if proposal_step < self.max_step:
-        #             step = proposal_step
-        #         else:
-        #             step = self.max_step
+            if self.steady_state:
+                # print(proposal_step, self.max_step)
+                # if proposal_step < self.max_step:
+                step = proposal_step
+                # else:
+                    # step = self.max_step
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -204,7 +205,7 @@ class SSA(TTAMethod):
                 else:
                     updated_hidden_param = src_param_
                 # Update step
-                updated_param = predicted_param - self.ssa_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
+                updated_param = (1 - self.ssa_parameters["kappa_2"]) * predicted_param + self.ssa_parameters["kappa_2"] * updated_hidden_param 
                 param.data = updated_param
                 
                 # new statistics
