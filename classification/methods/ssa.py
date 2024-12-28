@@ -48,25 +48,27 @@ class SSA(TTAMethod):
                 for _, hook in module._forward_pre_hooks.items():
                     if isinstance(hook, WeightNorm):
                         delattr(module, hook.name)
-
-        # SSA
+        
         self.src_model = deepcopy(self.model)
         for param in self.src_model.parameters():
             param.detach_()
+            
+        # CMF
+        self.dual_kf = self.cfg.SSA.DUAL_KF
         self.hidden_model = deepcopy(self.model)
         for param in self.hidden_model.parameters():
             param.detach_()
-            
-        # Bayesian filtering parameters
-        self.dual_kf = self.cfg.SSA.DUAL_KF
-        self.bf_parameters = {
-            "kappa_0": cfg.SSA.KAPPA_0,
-            "kappa_1": cfg.SSA.KAPPA_1,
+        self.cmf_parameters = {
+            "alpha": cfg.SSA.ALPHA,
+            "beta": cfg.SSA.BETA,
+        }
+        
+        # SSA       
+        self.ssa_parameters = {
             "kappa_2": cfg.SSA.KAPPA_2,
             "S": cfg.SSA.SS * cfg.SSA.EPS,
         }
         
-        # SDE approximation
         self.learnable_model_state = {}
         for n, p in model.named_parameters():
             if p.requires_grad:
@@ -77,7 +79,6 @@ class SSA(TTAMethod):
         self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
-        # Steady-state Detaction
         self.max_step = np.sqrt(cfg.SSA.SS * 2) 
         self.steady_state = False
         
@@ -129,9 +130,9 @@ class SSA(TTAMethod):
         total_delta_g = 0.0
         total_total_g = 0.0
         for k in self.learnable_model_state.keys():
-            fp32_param = to_float(observation[k][:].data[:])
-            fp32_prev_param = to_float(prev_observation[k][:].data[:])
-            fp32_src_param = to_float(reference_observation[k][:].data[:])
+            fp32_param = to_float(observation[k].data)
+            fp32_prev_param = to_float(prev_observation[k].data)
+            fp32_src_param = to_float(reference_observation[k].data)
             
             delta_g = (fp32_prev_param - fp32_param) / self.lr # approximation
             total_g = (fp32_src_param - fp32_param) / (self.lr * (self.k + 1)) # approximation
@@ -160,13 +161,13 @@ class SSA(TTAMethod):
         # 1. Inference variance
         step = 1.0
         # if self.full_flag:
-        #     S = self.bf_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
+        #     S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
         #     proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
-        #     print(proposal_step, self.max_step)
         #     if proposal_step < self.max_step or self.steady_state:
         #         self.steady_state = True
                 
         #     if self.steady_state:
+        #         print(proposal_step, self.max_step)
         #         if proposal_step < self.max_step:
         #             step = proposal_step
         #         else:
@@ -188,28 +189,28 @@ class SSA(TTAMethod):
                 
                 if self.dual_kf:
                     # (KF1) Prediction step with KF1
-                    fp32_hidden_param = to_float(hidden_param[:].data[:])
-                    delta_a = (fp32_hidden_param - fp32_src_param) / self.lr
-                    predicted_hidden_param = fp32_hidden_param - self.bf_parameters["kappa_0"] * self.lr * delta_a
+                    fp32_hidden_param = hidden_param.data
+                    predicted_hidden_param = self.cmf_parameters["alpha"] * fp32_hidden_param + (1 - self.cmf_parameters["alpha"]) * fp32_src_param
                 # (KF2) Prediction step with KF2 under steady state assumption at t-1
-                delta_g = (fp32_prev_param - fp32_param) / self.lr
                 if self.full_flag:
-                    delta_g = delta_g * step
-                    predicted_param = fp32_prev_param - self.lr * delta_g
+                    predicted_param = (1 - step) * fp32_prev_param + step * fp32_param
                 else:
                     predicted_param = fp32_param
-                total_delta_g += delta_g.sum()
-                total_numel += delta_g.numel()
                 
                 if self.dual_kf:
                     # (KF1) Update step with KF1
-                    updated_hidden_param = predicted_hidden_param - self.bf_parameters["kappa_1"] * (predicted_hidden_param - predicted_param)
-                    hidden_param = updated_hidden_param
+                    updated_hidden_param = self.cmf_parameters["beta"] * predicted_hidden_param + (1 -  self.cmf_parameters["beta"]) * predicted_param
+                    hidden_param.data = updated_hidden_param
                 else:
                     updated_hidden_param = fp32_src_param
                 # (KF2) Update step with KF2
-                updated_param = predicted_param - self.bf_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
-                param = updated_param
+                updated_param = predicted_param - self.ssa_parameters["kappa_2"] * (predicted_param - updated_hidden_param)
+                param.data = updated_param
+                
+                # new statistics
+                delta_g = (fp32_prev_param - fp32_param) / self.lr
+                total_delta_g += delta_g.sum()
+                total_numel += delta_g.numel()
                 
         if total_numel > 0:
             delta_g = total_delta_g / total_numel

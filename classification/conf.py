@@ -302,8 +302,8 @@ _C.SSA.EPS = 1e-12
 _C.SSA.SS = 5.0
 
 _C.SSA.DUAL_KF = True
-_C.SSA.KAPPA_0 = 0.01 # CMF
-_C.SSA.KAPPA_1 = 0.06 # CMF
+_C.SSA.ALPHA = 0.99 # CMF
+_C.SSA.BETA = 0.94 # CMF
 
 # ------------------------------- Source options -------------------------- #
 _C.SOURCE = CfgNode()
