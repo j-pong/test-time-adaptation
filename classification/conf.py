@@ -22,6 +22,7 @@ _C = CfgNode()
 cfg = _C
 
 # ---------------------------------- Misc options --------------------------- #
+_C.ROUND = 1
 
 # Setting - see README.md for more information
 _C.SETTING = "continual"

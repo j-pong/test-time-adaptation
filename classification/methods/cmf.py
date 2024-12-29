@@ -15,27 +15,23 @@ from utils.registry import ADAPTATION_REGISTRY
 from utils.losses import Entropy, SymmetricCrossEntropy, SoftLikelihoodRatio
 from utils.misc import ema_update_model
 
+def to_float(t):
+    return t.float() if torch.is_floating_point(t) else t
 
 @torch.no_grad()
-def kernel(
-    model,
-    src_model,
-    bias=0.99,
-    normalization_constant=1e-4
+def moments(
+    model, 
+    src_model, 
+    alpha=0.99, 
+    update_all=False, 
 ):
-    energy_buffer = []
-    for param, src_param in zip(model.parameters(), src_model.parameters()):
-        energy = F.cosine_similarity(
-            src_param.data.flatten(),
-            param.flatten(),
-            dim=-1)
-
-        energy_buffer.append(energy)
-
-    energy = torch.stack(energy_buffer, dim=0).mean()
-    energy = (bias - energy) / normalization_constant
-
-    return energy
+    # energy_buffer =  []
+    if alpha < 1.0:
+        for param, src_param in zip(model.parameters(), src_model.parameters()):
+            if param.requires_grad or update_all: 
+                fp32_param = to_float(alpha * param[:].data[:]) + (1 - alpha) * to_float(src_param[:].data[:])
+                param.data[:] = fp32_param.half()
+    return model
 
 
 @torch.no_grad()
@@ -75,80 +71,59 @@ class CMF(TTAMethod):
             param.detach_()
 
         # CMF
-        self.alpha = cfg.CMF.ALPHA
-        self.gamma = cfg.CMF.GAMMA
         self.post_type = cfg.CMF.TYPE
         self.hidden_model = deepcopy(self.model)
         for param in self.hidden_model.parameters():
-            param.detach_()
-
-        self.hidden_var = 0
-        self.q = cfg.CMF.Q * param_size_ratio
-
+            param.detach_() 
+        
+        self.alpha = cfg.CMF.ALPHA
+        
+        self.register_buffer('hidden_var', torch.ones(1).float().cuda() * 0.0)
+        if "resnet" in self.cfg.MODEL.ARCH:
+            self.q = 0.00025 * param_size_ratio
+        else:
+            self.q = cfg.CMF.Q * param_size_ratio
+        
+        self.gamma = cfg.CMF.GAMMA
+        
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
 
     @torch.no_grad()
     def bayesian_filtering(self):
         # 1. predict step
-        # NOTE: self.post_type==lp is the default,
-        # in which case the predict step and update step can be combined to reduce computation.
+        # NOTE: self.post_type==lp is the default, 
+        # in which case the predict step and update step can be combined to reduce computation. 
         # For clarity, they are separated in the code.
-        recovered_model = ema_update_model(
-            model_to_update=self.hidden_model,
-            model_to_merge=self.src_model,
-            momentum=self.alpha,
-            device=self.device,
+        recovered_model = moments(
+            model=self.hidden_model,
+            src_model=self.src_model, 
+            alpha=self.alpha,
             update_all=True
         )
-
+        
         # 2. update step
         self.hidden_var = self.alpha ** 2 * self.hidden_var + self.q
-
+            
         r = (1 - self.q)
         self.beta = r / (self.hidden_var + r)
         self.beta = self.beta if self.beta > 0.89 else 0.89
         self.beta = self.beta if self.beta < 0.9999 else 1.0
-
+        
         self.hidden_var = self.beta * self.hidden_var
-        self.hidden_model = ema_update_model(
-            model_to_update=recovered_model,
-            model_to_merge=self.model,
-            momentum=self.beta,
-            device=self.device,
+        self.hidden_model = moments(
+            model=recovered_model, 
+            src_model=self.model, 
+            alpha=self.beta,
             update_all=True
         )
-
+        
         # 3. parameter ensemble step
-        self.model = ema_update_model(
-            model_to_update=self.model,
-            model_to_merge=recovered_model if self.post_type == "op" else self.hidden_model,
-            momentum=self.gamma,
-            device=self.device
+        self.model = moments(
+            model=self.model, 
+            src_model=recovered_model if self.post_type == "op" else self.hidden_model, 
+            alpha=self.gamma
         )
-
-        # logging
-        if self.cfg.TEST.DEBUG:
-            tgt_energy = kernel(
-                model=self.model,
-                src_model=self.src_model,
-                bias=0,
-                normalization_constant=1.0
-            )
-            hidden_energy = kernel(
-                model=self.hidden_model,
-                src_model=self.src_model,
-                bias=0,
-                normalization_constant=1.0
-            )
-            res ={
-                "tgt_energy": tgt_energy,
-                "hidden_energy": hidden_energy,
-            }
-        else:
-            res = None
-
-        return res
 
     def loss_calculation(self, x):
         imgs_test = x[0]

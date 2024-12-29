@@ -72,63 +72,64 @@ def evaluate(description):
 
     # start evaluation
     t = time.process_time()
-    for i_dom, domain_name in enumerate(domain_seq_loop):
-        if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
-            try:
-                model.reset()
-                logger.info("resetting model")
-            except AttributeError:
+    for i in range(cfg.ROUND):
+        for i_dom, domain_name in enumerate(domain_seq_loop):
+            if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
+                try:
+                    model.reset()
+                    logger.info("resetting model")
+                except AttributeError:
+                    logger.warning("not resetting model")
+            else:
                 logger.warning("not resetting model")
-        else:
-            logger.warning("not resetting model")
 
-        for severity in severities:
-            test_data_loader = get_test_loader(
-                setting=cfg.SETTING,
-                adaptation=cfg.MODEL.ADAPTATION,
-                dataset_name=cfg.CORRUPTION.DATASET,
-                preprocess=model_preprocess,
-                data_root_dir=cfg.DATA_DIR,
-                domain_name=domain_name,
-                domain_names_all=domain_sequence,
-                severity=severity,
-                num_examples=cfg.CORRUPTION.NUM_EX,
-                rng_seed=cfg.RNG_SEED,
-                use_clip=cfg.MODEL.USE_CLIP,
-                n_views=cfg.TEST.N_AUGMENTATIONS,
-                delta_dirichlet=cfg.TEST.DELTA_DIRICHLET,
-                batch_size=cfg.TEST.BATCH_SIZE,
-                shuffle=False,
-                workers=min(cfg.TEST.NUM_WORKERS, os.cpu_count())
-            )
+            for severity in severities:
+                test_data_loader = get_test_loader(
+                    setting=cfg.SETTING,
+                    adaptation=cfg.MODEL.ADAPTATION,
+                    dataset_name=cfg.CORRUPTION.DATASET,
+                    preprocess=model_preprocess,
+                    data_root_dir=cfg.DATA_DIR,
+                    domain_name=domain_name,
+                    domain_names_all=domain_sequence,
+                    severity=severity,
+                    num_examples=cfg.CORRUPTION.NUM_EX,
+                    rng_seed=cfg.RNG_SEED,
+                    use_clip=cfg.MODEL.USE_CLIP,
+                    n_views=cfg.TEST.N_AUGMENTATIONS,
+                    delta_dirichlet=cfg.TEST.DELTA_DIRICHLET,
+                    batch_size=cfg.TEST.BATCH_SIZE,
+                    shuffle=False,
+                    workers=min(cfg.TEST.NUM_WORKERS, os.cpu_count())
+                )
 
-            if i_dom == 0:
-                # Note that the input normalization is done inside of the model
-                logger.info(f"Using the following data transformation:\n{test_data_loader.dataset.transform}")
+                if i_dom == 0:
+                    # Note that the input normalization is done inside of the model
+                    logger.info(f"Using the following data transformation:\n{test_data_loader.dataset.transform}")
 
-            # evaluate the model
-            acc, domain_dict, num_samples = get_accuracy(
-                model,
-                data_loader=test_data_loader,
-                dataset_name=cfg.CORRUPTION.DATASET,
-                domain_name=domain_name,
-                setting=cfg.SETTING,
-                domain_dict=domain_dict,
-                print_every=cfg.PRINT_EVERY,
-                device=device
-            )
+                # evaluate the model
+                acc, domain_dict, num_samples = get_accuracy(
+                    model,
+                    data_loader=test_data_loader,
+                    dataset_name=cfg.CORRUPTION.DATASET,
+                    domain_name=domain_name,
+                    setting=cfg.SETTING,
+                    domain_dict=domain_dict,
+                    print_every=cfg.PRINT_EVERY,
+                    device=device
+                )
 
-            err = 1. - acc
-            errs.append(err)
-            if severity == 5 and domain_name != "none":
-                errs_5.append(err)
-            
-            if hasattr(model, "accum_step"):
-                logger.info(f"estimated step: {model.accum_step / model.num_accum}")            
-                model.accum_step = model.accum_step * 0.0
-                model.num_accum = model.num_accum * 0.0
+                err = 1. - acc
+                errs.append(err)
+                if severity == 5 and domain_name != "none":
+                    errs_5.append(err)
+                
+                if hasattr(model, "accum_step"):
+                    logger.info(f"estimated step: {model.accum_step / model.num_accum}")            
+                    model.accum_step = model.accum_step * 0.0
+                    model.num_accum = model.num_accum * 0.0
 
-            logger.info(f"{cfg.CORRUPTION.DATASET} error % [{domain_name}{severity}][#samples={num_samples}]: {err:.2%}")
+                logger.info(f"{cfg.CORRUPTION.DATASET} error % [{domain_name}{severity}][#samples={num_samples}]: {err:.2%}")
     elapsed_time = time.process_time() - t
 
     logger.info(f"elapsed time: {elapsed_time}")
