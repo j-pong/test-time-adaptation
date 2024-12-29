@@ -72,7 +72,7 @@ def evaluate(description):
 
     # start evaluation
     t = time.process_time()
-    for i in range(cfg.ROUND):
+    for _ in range(cfg.ROUND):
         for i_dom, domain_name in enumerate(domain_seq_loop):
             if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
                 try:
