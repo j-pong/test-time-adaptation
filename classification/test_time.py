@@ -72,16 +72,17 @@ def evaluate(description):
 
     # start evaluation
     t = time.process_time()
-    for _ in range(cfg.ROUND):
+    for i_round in range(cfg.ROUND):
         for i_dom, domain_name in enumerate(domain_seq_loop):
-            if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
-                try:
-                    model.reset()
-                    logger.info("resetting model")
-                except AttributeError:
+            if i_round < 1:
+                if i_dom == 0 or "reset_each_shift" in cfg.SETTING:
+                    try:
+                        model.reset()
+                        logger.info("resetting model")
+                    except AttributeError:
+                        logger.warning("not resetting model")
+                else:
                     logger.warning("not resetting model")
-            else:
-                logger.warning("not resetting model")
 
             for severity in severities:
                 test_data_loader = get_test_loader(

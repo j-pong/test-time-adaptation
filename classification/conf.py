@@ -298,9 +298,9 @@ _C.TPT.CLASS_TOKEN_POS = "end"      # Position of the class token. Choose from: 
 # ------------------------------- TPT options ----------------------------- #
 _C.SSA = CfgNode()
 
-_C.SSA.KAPPA_2 = 0.01
-_C.SSA.EPS = 1e-12
-_C.SSA.SS = 1.0
+_C.SSA.KAPPA = 0.01
+_C.SSA.EPS = 1.0e-12
+_C.SSA.CHUNK_SIZE = 96
 
 # Active CMF
 _C.SSA.DUAL_KF = True

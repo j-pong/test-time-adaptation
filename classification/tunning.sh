@@ -1,4 +1,4 @@
-deltas=("1.0" "1.5" "2" "3")
+deltas=("2.5e-04")
 for delta in ${deltas[*]}; do
-    bash benchmark.sh "ssa" "d2v" "1 2 3 4" "SSA.SS $delta SSA.DUAL_KF True" DKF_SS${delta} g1
+    bash benchmark.sh "roid cmf ssa" "vit_b_16 swin_b" "1 2 3 4" "OPTIM.LR $delta" DKF_LR${delta}_model g1
 done

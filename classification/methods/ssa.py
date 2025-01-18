@@ -63,10 +63,16 @@ class SSA(TTAMethod):
             "beta": cfg.SSA.BETA,
         }
         
-        # SSA       
+        # SSA
+        if "swin_" in self.cfg.MODEL.ARCH:
+            ss = 2.5
+        elif "d2v" in self.cfg.MODEL.ARCH:
+            ss = 1.0
+        else:
+            raise AttributeError()
         self.ssa_parameters = {
-            "kappa_2": cfg.SSA.KAPPA_2,
-            "S": cfg.SSA.SS * cfg.SSA.EPS,
+            "kappa": cfg.SSA.KAPPA,
+            "S": ss * cfg.SSA.EPS,
         }
         
         self.learnable_model_state = {}
@@ -74,12 +80,12 @@ class SSA(TTAMethod):
             if p.requires_grad:
                 self.learnable_model_state[n] = p.clone().detach()
         self.k = 0
-        self.buffer_size = 96
+        self.buffer_size = cfg.SSA.CHUNK_SIZE
         self.full_flag = False
         self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
-        self.steady_cond = np.sqrt(cfg.SSA.SS * 2) 
+        self.steady_cond = np.sqrt(ss * 2) 
         self.steady_state = False
         
         # Monitoring
@@ -88,24 +94,8 @@ class SSA(TTAMethod):
         
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
-    
-    def setup_optimizer(self):
-        if "d2v" in self.cfg.MODEL.ARCH:
-            self.lr = 1.0e-5
-            return torch.optim.SGD(self.params,
-                                   lr=self.lr,
-                                   momentum=self.cfg.OPTIM.MOMENTUM,
-                                   dampening=self.cfg.OPTIM.DAMPENING,
-                                   weight_decay=self.cfg.OPTIM.WD,
-                                   nesterov=self.cfg.OPTIM.NESTEROV)
-        else:
-            self.lr = 2.5e-4
-            return torch.optim.SGD(self.params,
-                                   lr=self.lr,
-                                   momentum=self.cfg.OPTIM.MOMENTUM,
-                                   dampening=self.cfg.OPTIM.DAMPENING,
-                                   weight_decay=self.cfg.OPTIM.WD,
-                                   nesterov=self.cfg.OPTIM.NESTEROV)
+        
+        self.lr = self.cfg.OPTIM.LR
     
     @torch.no_grad()
     def sde_buffering(self, value, step):
@@ -155,8 +145,9 @@ class SSA(TTAMethod):
         # 1. Inference variance
         step = 1.0
         if self.full_flag:
-            S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
-            proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
+            S = self.ssa_parameters["S"]
+            proposal_step = torch.sqrt(S / var_t) / self.lr
+            print(proposal_step, self.steady_state)
             
             if proposal_step < self.steady_cond or self.steady_state:
                 self.steady_state = True
@@ -195,7 +186,7 @@ class SSA(TTAMethod):
                 else:
                     updated_hidden_param = src_param_
                 # Update step
-                updated_param = (1 - self.ssa_parameters["kappa_2"]) * predicted_param + self.ssa_parameters["kappa_2"] * updated_hidden_param 
+                updated_param = (1 - self.ssa_parameters["kappa"]) * predicted_param + self.ssa_parameters["kappa"] * updated_hidden_param 
                 param.data = updated_param
                 
                 # new statistics
