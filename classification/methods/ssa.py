@@ -64,15 +64,15 @@ class SSA(TTAMethod):
         }
         
         # SSA
+        eps = cfg.SSA.EPS 
+        ss = 1.0
         if "swin_" in self.cfg.MODEL.ARCH:
-            ss = 2.5
-        elif "d2v" in self.cfg.MODEL.ARCH:
-            ss = 1.0
-        else:
-            raise AttributeError()
+            ss = 2.0
+        elif "vit_" in self.cfg.MODEL.ARCH:
+            eps = 1e-11
         self.ssa_parameters = {
             "kappa": cfg.SSA.KAPPA,
-            "S": ss * cfg.SSA.EPS,
+            "S": ss * eps,
         }
         
         self.learnable_model_state = {}
@@ -95,7 +95,22 @@ class SSA(TTAMethod):
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
         
+    def setup_optimizer(self):
         self.lr = self.cfg.OPTIM.LR
+        if "d2v" in self.cfg.MODEL.ARCH:
+            return torch.optim.SGD(self.params,
+                                   lr=self.lr,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
+        else:
+            return torch.optim.SGD(self.params,
+                                   lr=self.lr,
+                                   momentum=self.cfg.OPTIM.MOMENTUM,
+                                   dampening=self.cfg.OPTIM.DAMPENING,
+                                   weight_decay=self.cfg.OPTIM.WD,
+                                   nesterov=self.cfg.OPTIM.NESTEROV)
     
     @torch.no_grad()
     def sde_buffering(self, value, step):
@@ -205,6 +220,8 @@ class SSA(TTAMethod):
     def loss_calculation(self, x):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
+        
+        # loss = self.ent(logits=outputs).mean()
 
         if self.use_weighting:
             with torch.no_grad():

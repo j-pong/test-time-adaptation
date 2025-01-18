@@ -278,6 +278,18 @@ _C.CMF.GAMMA = 0.99
 _C.CMF.Q = 0.005
 _C.CMF.TYPE = "lp"
 
+# ------------------------------- SSA options ----------------------------- #
+_C.SSA = CfgNode()
+
+_C.SSA.KAPPA = 0.01
+_C.SSA.EPS = 1.0e-12
+_C.SSA.CHUNK_SIZE = 96
+
+# Active CMF
+_C.SSA.DUAL_KF = True
+_C.SSA.ALPHA = 0.99 # CMF
+_C.SSA.BETA = 0.94 # CMF
+
 # ------------------------------- CLIP options ---------------------------- #
 _C.CLIP = CfgNode()
 
@@ -294,18 +306,6 @@ _C.TPT.SELECTION_P = 0.1            # Percentile of the most certain prediction
 _C.TPT.N_CTX = 4                    # Number of tunable context tokens
 _C.TPT.CTX_INIT = "a_photo_of_a"    # Context initialization
 _C.TPT.CLASS_TOKEN_POS = "end"      # Position of the class token. Choose from: [end, middle, front]
-
-# ------------------------------- TPT options ----------------------------- #
-_C.SSA = CfgNode()
-
-_C.SSA.KAPPA = 0.01
-_C.SSA.EPS = 1.0e-12
-_C.SSA.CHUNK_SIZE = 96
-
-# Active CMF
-_C.SSA.DUAL_KF = True
-_C.SSA.ALPHA = 0.99 # CMF
-_C.SSA.BETA = 0.94 # CMF
 
 # ------------------------------- Source options -------------------------- #
 _C.SOURCE = CfgNode()
