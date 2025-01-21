@@ -154,21 +154,23 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def bayesian_filtering(
         self,
+        bwe=True
     ): 
-        var_t = self.estimate_variance()
         
         # 1. Inference variance
-        step = 1.0
-        if self.full_flag:
-            S = self.ssa_parameters["S"]
-            proposal_step = torch.sqrt(S / var_t) / self.lr
-            print(proposal_step, self.steady_state)
-            
-            if proposal_step < self.steady_cond or self.steady_state:
-                self.steady_state = True
+        if bwe:
+            step = 1.0
+            var_t = self.estimate_variance()
+            if self.full_flag:
+                S = self.ssa_parameters["S"]
+                proposal_step = torch.sqrt(S / var_t) / self.lr
+                # print(proposal_step, self.steady_state)
                 
-            if self.steady_state:
-                step = proposal_step
+                # if proposal_step < self.steady_cond or self.steady_state:
+                self.steady_state = True
+                    
+                if self.steady_state:
+                    step = proposal_step
             
         # 2. Inference mean
         src_model, model, hidden_model = self.models
@@ -184,25 +186,26 @@ class SSA(TTAMethod):
                 prev_param_ = prev_param.data
                 src_param_ = src_param.data
                 
-                # (CMF) Prediction step
-                if self.dual_kf:
-                    hidden_param_ = hidden_param.data
-                    predicted_hidden_param = self.cmf_parameters["alpha"] * hidden_param_ + (1 - self.cmf_parameters["alpha"]) * src_param_
-                # Prediction step
-                if self.full_flag:
-                    predicted_param = (1 - step) * prev_param_ + step * param_
-                else:
-                    predicted_param = param_
-                
-                # (CMF) Update step
-                if self.dual_kf:
-                    updated_hidden_param = self.cmf_parameters["beta"] * predicted_hidden_param + (1 -  self.cmf_parameters["beta"]) * predicted_param
-                    hidden_param.data = updated_hidden_param
-                else:
-                    updated_hidden_param = src_param_
-                # Update step
-                updated_param = (1 - self.ssa_parameters["kappa"]) * predicted_param + self.ssa_parameters["kappa"] * updated_hidden_param 
-                param.data = updated_param
+                if bwe:
+                    # (CMF) Prediction step
+                    if self.dual_kf:
+                        hidden_param_ = hidden_param.data
+                        predicted_hidden_param = self.cmf_parameters["alpha"] * hidden_param_ + (1 - self.cmf_parameters["alpha"]) * src_param_
+                    # Prediction step
+                    if self.full_flag:
+                        predicted_param = (1 - step) * prev_param_ + step * param_
+                    else:
+                        predicted_param = param_
+                    
+                    # (CMF) Update step
+                    if self.dual_kf:
+                        updated_hidden_param = self.cmf_parameters["beta"] * predicted_hidden_param + (1 -  self.cmf_parameters["beta"]) * predicted_param
+                        hidden_param.data = updated_hidden_param
+                    else:
+                        updated_hidden_param = src_param_
+                    # Update step
+                    updated_param = (1 - self.ssa_parameters["kappa"]) * predicted_param + self.ssa_parameters["kappa"] * updated_hidden_param 
+                    param.data = updated_param
                 
                 # new statistics
                 delta_g = (prev_param_ - param_) / self.lr
@@ -215,45 +218,52 @@ class SSA(TTAMethod):
         else:
             raise ValueError()
         
-        return model, hidden_model, step
+        local_time = self.buffer_size
+        mean_delta_g = self.gradient_buffer.sum() / local_time
+        var_t = (self.gradient_buffer - mean_delta_g).square().sum() / local_time
+        # print(var_t.item())
+        
+        return model, hidden_model, var_t
     
-    def loss_calculation(self, x):
+    def loss_calculation(self, x, roid_loss=False):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
         
-        # loss = self.ent(logits=outputs).mean()
+        if roid_loss:
+            if self.use_weighting:
+                with torch.no_grad():
+                    # calculate diversity based weight
+                    weights_div = 1 - F.cosine_similarity(self.class_probs_ema.unsqueeze(dim=0), outputs.softmax(1), dim=1)
+                    weights_div = (weights_div - weights_div.min()) / (weights_div.max() - weights_div.min())
+                    mask = weights_div < weights_div.mean()
 
-        if self.use_weighting:
-            with torch.no_grad():
-                # calculate diversity based weight
-                weights_div = 1 - F.cosine_similarity(self.class_probs_ema.unsqueeze(dim=0), outputs.softmax(1), dim=1)
-                weights_div = (weights_div - weights_div.min()) / (weights_div.max() - weights_div.min())
-                mask = weights_div < weights_div.mean()
+                    # calculate certainty based weight
+                    weights_cert = - self.ent(logits=outputs)
+                    weights_cert = (weights_cert - weights_cert.min()) / (weights_cert.max() - weights_cert.min())
 
-                # calculate certainty based weight
-                weights_cert = - self.ent(logits=outputs)
-                weights_cert = (weights_cert - weights_cert.min()) / (weights_cert.max() - weights_cert.min())
+                    # calculate the final weights
+                    weights = torch.exp(weights_div * weights_cert / self.temperature)
+                    weights[mask] = 0.
 
-                # calculate the final weights
-                weights = torch.exp(weights_div * weights_cert / self.temperature)
-                weights[mask] = 0.
+                    self.class_probs_ema = update_model_probs(x_ema=self.class_probs_ema, x=outputs.softmax(1).mean(0),
+                                                            momentum=self.momentum_probs)
 
-                self.class_probs_ema = update_model_probs(x_ema=self.class_probs_ema, x=outputs.softmax(1).mean(0),
-                                                          momentum=self.momentum_probs)
+            # calculate the soft likelihood ratio loss
+            loss_out = self.slr(logits=outputs)
 
-        # calculate the soft likelihood ratio loss
-        loss_out = self.slr(logits=outputs)
-
-        # weight the loss
-        if self.use_weighting:
-            loss_out = loss_out * weights
-            loss_out = loss_out[~mask]
+            # weight the loss
+            if self.use_weighting:
+                loss_out = loss_out * weights
+                loss_out = loss_out[~mask]
+        else:
+            loss_out = self.ent(logits=outputs)
         loss = loss_out.sum() / self.batch_size
 
-        # calculate the consistency loss
-        if self.use_consistency:
-            outputs_aug = self.model(self.tta_transform(imgs_test[~mask]))
-            loss += (self.sce(x=outputs_aug, x_ema=outputs[~mask]) * weights[~mask]).sum() / self.batch_size
+        if roid_loss:      
+            # calculate the consistency loss
+            if self.use_consistency:
+                outputs_aug = self.model(self.tta_transform(imgs_test[~mask]))
+                loss += (self.sce(x=outputs_aug, x_ema=outputs[~mask]) * weights[~mask]).sum() / self.batch_size
 
         return outputs, loss
 

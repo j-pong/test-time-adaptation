@@ -282,7 +282,7 @@ _C.CMF.TYPE = "lp"
 _C.SSA = CfgNode()
 
 _C.SSA.KAPPA = 0.01
-_C.SSA.EPS = 1.0e-12
+_C.SSA.EPS = 1.0e-12 # 5e-13 for tent
 _C.SSA.CHUNK_SIZE = 96
 
 # Active CMF
