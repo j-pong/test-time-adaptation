@@ -143,11 +143,11 @@ class SSA(TTAMethod):
             
         delta_g = total_delta_g / total_numel
         
-        local_time = self.buffer_size #self.step_buffer.sum()
-        mean_delta_g = self.gradient_buffer.sum() / local_time
+        local_time = self.buffer_size
+        mean_delta_g = (self.gradient_buffer.sum() + delta_g) / local_time
         var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
             (delta_g - mean_delta_g).square()
-        var_t = var_t / (local_time+1)
+        var_t = var_t / (local_time + 1)
         
         return var_t
     
@@ -166,8 +166,8 @@ class SSA(TTAMethod):
                 proposal_step = torch.sqrt(S / var_t) / self.lr
                 # print(proposal_step, self.steady_state)
                 
-                # if proposal_step < self.steady_cond or self.steady_state:
-                self.steady_state = True
+                if proposal_step < self.steady_cond or self.steady_state:
+                    self.steady_state = True
                     
                 if self.steady_state:
                     step = proposal_step
@@ -213,19 +213,19 @@ class SSA(TTAMethod):
                 total_numel += delta_g.numel()
                 
         if total_numel > 0:
-            delta_g = total_delta_g / total_numel
+            delta_g = step * total_delta_g / total_numel
             self.sde_buffering(delta_g, step)
         else:
             raise ValueError()
         
         local_time = self.buffer_size
         mean_delta_g = self.gradient_buffer.sum() / local_time
-        var_t = (self.gradient_buffer - mean_delta_g).square().sum() / local_time
-        # print(var_t.item())
+        var_t_new = (self.gradient_buffer - mean_delta_g).square().sum() / local_time
+        print(f"{var_t.item()} {var_t_new.item()}")
         
-        return model, hidden_model, var_t
+        return model, hidden_model, step
     
-    def loss_calculation(self, x, roid_loss=False):
+    def loss_calculation(self, x, roid_loss=True):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
         
