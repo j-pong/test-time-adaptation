@@ -86,11 +86,15 @@ class SSA(TTAMethod):
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
         self.steady_cond = np.sqrt(ss * 2) 
-        self.steady_state = False
         
         # Monitoring
         self.accum_step = torch.zeros(1, requires_grad=False).float().cuda()
         self.num_accum = 0.0
+        
+        # Ablation Study
+        self.bwe = True
+        self.roid_loss = False
+        self.steady_state = False if self.roid_loss else True
         
         self.models = [self.src_model, self.model, self.hidden_model]
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
@@ -154,12 +158,11 @@ class SSA(TTAMethod):
     @torch.no_grad()
     def bayesian_filtering(
         self,
-        bwe=True
     ): 
         
         # 1. Inference variance
-        if bwe:
-            step = 1.0
+        step = 1.0
+        if self.bwe:
             var_t = self.estimate_variance()
             if self.full_flag:
                 S = self.ssa_parameters["S"]
@@ -186,7 +189,7 @@ class SSA(TTAMethod):
                 prev_param_ = prev_param.data
                 src_param_ = src_param.data
                 
-                if bwe:
+                if self.bwe:
                     # (CMF) Prediction step
                     if self.dual_kf:
                         hidden_param_ = hidden_param.data
@@ -225,11 +228,11 @@ class SSA(TTAMethod):
         
         return model, hidden_model, step
     
-    def loss_calculation(self, x, roid_loss=True):
+    def loss_calculation(self, x):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
         
-        if roid_loss:
+        if self.roid_loss:
             if self.use_weighting:
                 with torch.no_grad():
                     # calculate diversity based weight
@@ -259,7 +262,7 @@ class SSA(TTAMethod):
             loss_out = self.ent(logits=outputs)
         loss = loss_out.sum() / self.batch_size
 
-        if roid_loss:      
+        if self.roid_loss:      
             # calculate the consistency loss
             if self.use_consistency:
                 outputs_aug = self.model(self.tta_transform(imgs_test[~mask]))
