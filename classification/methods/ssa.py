@@ -130,11 +130,11 @@ class SSA(TTAMethod):
             
         delta_g = total_delta_g / total_numel
         
-        local_time = self.buffer_size #self.step_buffer.sum()
-        mean_delta_g = self.gradient_buffer.sum() / local_time
+        local_time = self.buffer_size
+        mean_delta_g = (self.gradient_buffer.sum() + delta_g) / (local_time + 1)
         var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
             (delta_g - mean_delta_g).square()
-        var_t = var_t / (local_time+1)
+        var_t = var_t / (local_time + 1)
         
         return var_t
     
