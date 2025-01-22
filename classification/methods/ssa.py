@@ -75,7 +75,7 @@ class SSA(TTAMethod):
             if p.requires_grad:
                 self.learnable_model_state[n] = p.clone().detach()
         self.k = 0
-        self.buffer_size = 96
+        self.buffer_size = cfg.SSA.CHUNK_SIZE
         self.full_flag = False
         self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
@@ -91,22 +91,13 @@ class SSA(TTAMethod):
         self.model_states, self.optimizer_state = self.copy_model_and_optimizer()
     
     def setup_optimizer(self):
-        if "d2v" in self.cfg.MODEL.ARCH:
-            self.lr = 1.0e-5
-            return torch.optim.SGD(self.params,
-                                   lr=self.lr,
-                                   momentum=self.cfg.OPTIM.MOMENTUM,
-                                   dampening=self.cfg.OPTIM.DAMPENING,
-                                   weight_decay=self.cfg.OPTIM.WD,
-                                   nesterov=self.cfg.OPTIM.NESTEROV)
-        else:
-            self.lr = 2.5e-4
-            return torch.optim.SGD(self.params,
-                                   lr=self.lr,
-                                   momentum=self.cfg.OPTIM.MOMENTUM,
-                                   dampening=self.cfg.OPTIM.DAMPENING,
-                                   weight_decay=self.cfg.OPTIM.WD,
-                                   nesterov=self.cfg.OPTIM.NESTEROV)
+        self.lr = self.cfg.OPTIM.LR
+        return torch.optim.SGD(self.params,
+                                lr=self.lr,
+                                momentum=self.cfg.OPTIM.MOMENTUM,
+                                dampening=self.cfg.OPTIM.DAMPENING,
+                                weight_decay=self.cfg.OPTIM.WD,
+                                nesterov=self.cfg.OPTIM.NESTEROV)
     
     @torch.no_grad()
     def sde_buffering(self, value, step):
@@ -205,7 +196,7 @@ class SSA(TTAMethod):
                 total_numel += delta_g.numel()
                 
         if total_numel > 0:
-            delta_g = total_delta_g / total_numel
+            delta_g = step * total_delta_g / total_numel
             self.sde_buffering(delta_g, step)
         else:
             raise ValueError()
