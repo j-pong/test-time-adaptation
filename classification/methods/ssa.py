@@ -64,7 +64,7 @@ class SSA(TTAMethod):
         }
         
         # SSA
-        ss = 1.0
+        ss = 1.0 # * np.log(10000) # ablation
         self.ssa_parameters = {
             "kappa": cfg.SSA.KAPPA,
             "S": ss * cfg.SSA.EPS,
@@ -80,7 +80,7 @@ class SSA(TTAMethod):
         self.register_buffer('gradient_buffer', torch.zeros(self.buffer_size).float().cuda())
         self.register_buffer('step_buffer', torch.zeros(self.buffer_size).float().cuda())
         
-        self.steady_cond = np.sqrt(ss * 2) 
+        self.steady_cond = np.sqrt(2.0 * ss)
         self.steady_state = False
         
         # Monitoring
@@ -97,8 +97,23 @@ class SSA(TTAMethod):
                                 momentum=self.cfg.OPTIM.MOMENTUM,
                                 dampening=self.cfg.OPTIM.DAMPENING,
                                 weight_decay=self.cfg.OPTIM.WD,
-                                nesterov=self.cfg.OPTIM.NESTEROV)
-    
+                                nesterov=self.cfg.OPTIM.NESTEROV)    
+        
+    @torch.no_grad()
+    def _mean_dim_variance(self, delta_g, offline=True):
+        local_time = self.buffer_size
+        if offline:
+            mean_delta_g = self.gradient_buffer.sum() / local_time
+            var_t = (self.gradient_buffer - mean_delta_g).square().sum()
+            var_t = var_t / (local_time)
+        else:
+            mean_delta_g = (self.gradient_buffer.sum() + delta_g) / (local_time + 1)
+            var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
+                (delta_g - mean_delta_g).square()
+            var_t = var_t / (local_time + 1)
+        
+        return var_t
+        
     @torch.no_grad()
     def sde_buffering(self, value, step):
         if self.k < self.buffer_size:
@@ -119,6 +134,7 @@ class SSA(TTAMethod):
         
         total_numel = 0
         total_delta_g = 0.0
+        # TODO(j-pong) online covariance estimation
         for k in self.learnable_model_state.keys():
             fp32_param = to_float(observation[k].data)
             fp32_prev_param = to_float(prev_observation[k].data)
@@ -129,12 +145,7 @@ class SSA(TTAMethod):
             total_numel += delta_g.numel()
             
         delta_g = total_delta_g / total_numel
-        
-        local_time = self.buffer_size
-        mean_delta_g = (self.gradient_buffer.sum() + delta_g) / (local_time + 1)
-        var_t = (self.gradient_buffer - mean_delta_g).square().sum() + \
-            (delta_g - mean_delta_g).square()
-        var_t = var_t / (local_time + 1)
+        var_t = self._mean_dim_variance(delta_g, False)
         
         return var_t
     
@@ -147,7 +158,7 @@ class SSA(TTAMethod):
         # 1. Inference variance
         step = 1.0
         if self.full_flag:
-            S = self.ssa_parameters["S"] # S = K ** 2 / (1 - K) * R_t, R_t = 1e-8
+            S = self.ssa_parameters["S"]
             proposal_step = torch.sqrt(S / (self.lr ** 2 * var_t))
             
             if proposal_step < self.steady_cond or self.steady_state:
@@ -198,6 +209,7 @@ class SSA(TTAMethod):
         if total_numel > 0:
             delta_g = step * total_delta_g / total_numel
             self.sde_buffering(delta_g, step)
+            # print(self._mean_dim_variance(delta_g, True).item()) # for graph
         else:
             raise ValueError()
         
@@ -206,6 +218,8 @@ class SSA(TTAMethod):
     def loss_calculation(self, x):
         imgs_test = x[0]
         outputs = self.model(imgs_test)
+        
+        # loss_out = self.ent(logits=outputs) # for tent
 
         if self.use_weighting:
             with torch.no_grad():
